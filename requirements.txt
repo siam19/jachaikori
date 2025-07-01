@@ -1,0 +1,19 @@
+# Web scraping and HTTP requests
+requests
+beautifulsoup4
+selenium
+
+# Data models and validation
+pydantic
+
+# Environment management
+python-dotenv
+
+# Graph database and core functionality
+graphiti-core
+
+# Database
+motor
+
+# Additional utilities (commonly needed)
+lxml  # For faster XML/HTML parsing with BeautifulSoup

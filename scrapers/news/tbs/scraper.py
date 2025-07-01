@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from ...models import Article
+from ..models import Article
 
 def scrape_article(url: str) -> Article:
     try:

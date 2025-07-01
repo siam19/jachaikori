@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from ...models import Article
+from ..models import Article
 
 class BDNews24Scraper:
     def scrape_article(self, url: str) -> Article:
