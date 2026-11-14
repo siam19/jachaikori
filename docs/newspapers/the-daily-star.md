@@ -89,4 +89,15 @@ On category pages, the layout includes:
    - Parse `.view-content` cards.
    - Parse English dates (`Nov 14, 2026`) via `parsePublishedDate()`.
    - Stop when consecutive items fall before cutoff date (e.g. 2026-01-01) or page returns 0 articles.
-2. **Cursor State:** `{"section": "politics", "page": N}`.
+## 7. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.thedailystar.net/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - Disallows internal Drupal administration and utility folders (`/core/`, `/admin/`, `/search/`, `/user/*`).
+- **Target Paths Permitted:** All public categories (`/news/politics`, `/business/economy`, `/news/*`) and article URLs are fully allowed.
+- **Sitemaps:**
+  - `https://www.thedailystar.net/sitemap.xml`
+  - `https://www.thedailystar.net/googlenews.xml`
+- **Recommended Delay:** 1000ms.

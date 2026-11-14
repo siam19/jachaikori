@@ -83,4 +83,20 @@ This makes date extraction trivial and eliminates the need to fetch the full det
    - Parse dates from `href` (`/YYYY/MM/DD/`)
    - If oldest date is still within range, scroll to `button:has-text("আরও সংবাদ")` and click
    - Repeat until oldest date reaches the cutoff (e.g. 2026-01-01) or button is disabled
-3. **Cursor State:** `{"itemsSeen": N, "lastId": "1767603"}`.
+## 7. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.kalerkantho.com/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - `Disallow: /api/`
+  - `Disallow: /topic/`
+  - `Disallow: /search`
+  - `Disallow: /home/printnews/`
+  - `Disallow: /cgi-bin/`
+- **Target Path Permitted:** Category routes (`/online/*`) and article routes (`/online/<category>/YYYY/MM/DD/<id>`) are fully allowed.
+- **Sitemaps:**
+  - `https://www.kalerkantho.com/sitemap.xml`
+  - `https://www.kalerkantho.com/daily-sitemap/sitemap-section.xml`
+  - `https://www.kalerkantho.com/topic.xml`
+- **Recommended Delay:** 1000–1500ms.

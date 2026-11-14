@@ -111,6 +111,15 @@ Researched and documented comprehensive crawling specifications for all 8 in-sco
 
 ---
 
+## 2026-11-15: robots.txt Verification & Policy Audit
+
+Verified `robots.txt` availability, disallow rules, and sitemaps across all 8 outlets:
+- Added dedicated `Robots.txt & Crawling Policy` sections to all 8 outlet guides in `docs/newspapers/*.md`.
+- Confirmed target harvesting paths (`/search` for Prothom Alo, `/archive` for Jugantor, Ittefaq, TBS, and bdnews24, category streams for Daily Star, Bangladesh Pratidin, and Kaler Kantho) are completely allowed.
+- Recorded `Crawl-delay: 10` for TBS and sitemaps for all outlets.
+
+---
+
 ## Verification & Status
 
 - **Typecheck**: `bun run typecheck` passed (0 errors).

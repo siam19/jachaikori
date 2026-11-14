@@ -78,8 +78,18 @@ https://www.prothomalo.com/search?published-after=1794333600000&published-before
 
 ---
 
-## 6. Implementation Notes & Gotchas
+## 7. Robots.txt & Crawling Policy
 
-1. **Relative Date Parsing:** List items frequently use relative timestamps in Bangla numerals (`১৫ মিনিট আগে`, `৩ ঘণ্টা আগে`). The date parser converts Bangla digits to ASCII and computes the ISO timestamp in `Asia/Dhaka` (+06:00).
-2. **Next.js Hydration:** If driving with Playwright, allow 1–2 seconds for client-side hydration before clicking the "আরও" button.
-3. **Cutoff Strategy:** Step backward in fixed 1-day or 3-day windows using the `published-after` and `published-before` timestamp parameters.
+- **Robots.txt URL:** `https://www.prothomalo.com/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - `Disallow: /shell.html`
+  - `Disallow: /api/auth/`
+  - `Disallow: /api/comments/get_comments_json`
+  - `Disallow: /story/*/element/`
+- **Target Path Permitted:** `/search` and all article URLs are fully allowed.
+- **Sitemaps:**
+  - `https://www.prothomalo.com/sitemap.xml`
+  - `https://www.prothomalo.com/news_sitemap.xml`
+- **Recommended Delay:** 1000ms between requests.

@@ -84,4 +84,15 @@ The timestamp in `p.desktopTime` follows the format:
    - Step day-by-day backwards: set `dateFrom=YYYY-MM-DD+00:00` and `dateTo=YYYY-MM-DD+23:59`.
    - Iterate through pages: `page=1`, `page=2`, etc. until the "Next" link disappears.
    - Move to the previous calendar day.
-3. **Cursor State:** `{"date": "YYYY-MM-DD", "page": N}`.
+## 6. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.jugantor.com/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - `Disallow: /ajax/`
+- **Target Path Permitted:** `/archive` is explicitly allowed and unblocked.
+- **Sitemaps:**
+  - `https://www.jugantor.com/sitemap.xml`
+  - `https://www.jugantor.com/news_sitemap.xml`
+- **Recommended Delay:** 1000ms.

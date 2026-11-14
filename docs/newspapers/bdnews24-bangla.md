@@ -115,4 +115,15 @@ The published timestamp in the card follows:
      - Parse `data.html` with Cheerio.
      - Upsert items into SQLite catalog.
      - When `html` is empty or fewer than `limit` items return, advance date window backward.
-2. **Cursor State:** `{"sectionId": 39002, "offset": 24, "before": "YYYY-MM-DD"}`.
+## 7. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://bangla.bdnews24.com/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Disallow:` (empty — all paths are explicitly permitted for general crawlers!)
+  - Only specific third-party commercial crawlers (`SemrushBot`, `AhrefsBot`, `DotBot`) and AI scrapers (`GPTBot`, `anthropic-ai`) are blocked with `Disallow: /`.
+- **Target Paths Permitted:** `/archive`, `/archive/fetch`, and all article URLs are completely allowed.
+- **Sitemaps:**
+  - `https://bangla.bdnews24.com/sitemap.xml`
+  - `https://bangla.bdnews24.com/news_sitemap.xml`
+- **Recommended Delay:** 1000ms.

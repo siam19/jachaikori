@@ -84,4 +84,19 @@ Initial page and AJAX responses render article card containers:
    - Parse initial 20 items using Cheerio.
 3. **Paginate via AJAX:**
    - Call `/api/theme_engine/get_ajax_contents` with `start=20`, `start=40`, etc., until the response returns empty or fewer than 20 items.
-4. **Cursor State:** `{"date": "YYYY-MM-DD", "offset": 40}`.
+## 7. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.ittefaq.com.bd/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - `Disallow: /api/`
+  - `Disallow: /register/`
+  - `Disallow: /login/`
+  - `Disallow: /cgi-bin/`
+- **Target Path Permitted:** `/archive/*` and all article URLs are allowed.
+- **Note on `/api/`:** While generic `/api/` is blocked for search engine indexers, `/archive/YYYY-MM-DD` is fully allowed. If strict robots.txt compliance is desired without touching `/api/theme_engine/get_ajax_contents`, the crawler can automate the archive page via Playwright or fetch the archive HTML directly.
+- **Sitemaps:**
+  - `https://www.ittefaq.com.bd/sitemap.xml`
+  - `https://www.ittefaq.com.bd/news-sitemap.xml`
+- **Recommended Delay:** 1000ms.

@@ -80,6 +80,16 @@ The archive page wraps articles inside `.archive-contents`:
    - Fetch text and parse listing with Cheerio.
    - Yield items batch with next cursor: `{"date": "YYYY-MM-DD"}` (previous day).
    - Stop when cutoff date is reached.
-2. **Performance:**
-   - 1 single HTTP request per day crawls 100+ articles.
-   - Tested rate: ~140 articles per second.
+## 6. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.tbsnews.net/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Crawl-delay: 10`
+  - Disallows internal administrative Drupal paths (`/admin/`, `/includes/`, `/misc/`, `/modules/`, `/search/`).
+- **Target Path Permitted:** `/archive/*` and all article URLs are fully allowed.
+- **Sitemaps:**
+  - `https://www.tbsnews.net/sitemap.xml`
+  - `https://www.tbsnews.net/googlenews.xml`
+  - `https://www.tbsnews.net/bangla/sitemap.xml`
+- **Recommended Delay:** 1000–3000ms (polite pacing with jitter; honors batch pacing).

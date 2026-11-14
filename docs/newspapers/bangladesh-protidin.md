@@ -69,4 +69,17 @@ The date is encoded directly in the path (`2026/11/14`), allowing instant cutoff
    - Extract the date from the URL path
    - When the oldest article on the page is older than the cutoff date (e.g. 2026-01-01), stop.
    - Increment `page` by 1.
-3. **Cursor State:** `{"page": N}`.
+## 6. Robots.txt & Crawling Policy
+
+- **Robots.txt URL:** `https://www.bd-pratidin.com/robots.txt`
+- **Reviewed On:** 2026-11-15
+- **Directives for `User-agent: *`:**
+  - `Allow: /`
+  - `Disallow: /assets/ckeditor/`
+  - `Disallow: /home/printnews/`
+  - `Disallow: /cgi-bin/`
+  - `Disallow: /home`
+  - `Disallow: /index.php`
+- **Target Paths Permitted:** All category routes (`/national`, `/economy`, `/minister-speech`) and article paths (`/<section>/YYYY/MM/DD/<id>`) are fully allowed.
+- **Sitemap:** `https://www.bd-pratidin.com/sitemap.xml`
+- **Recommended Delay:** 1000–1500ms with jitter.
