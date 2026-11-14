@@ -226,6 +226,26 @@ export class CatalogDatabase {
   }
 
   /**
+   * Exports articles from the database.
+   */
+  getArticles(outlet?: OutletId): Array<{ id: string; outlet: string; canonicalUrl: string; title: string; publishedAt: string | null }> {
+    if (outlet) {
+      return this.db.prepare(`
+        SELECT id, outlet, canonical_url as canonicalUrl, title, published_at as publishedAt
+        FROM article
+        WHERE outlet = ?
+        ORDER BY published_at DESC, created_at DESC
+      `).all(outlet) as any[];
+    }
+
+    return this.db.prepare(`
+      SELECT id, outlet, canonical_url as canonicalUrl, title, published_at as publishedAt
+      FROM article
+      ORDER BY outlet ASC, published_at DESC, created_at DESC
+    `).all() as any[];
+  }
+
+  /**
    * Closes the database cleanly.
    */
   close(): void {

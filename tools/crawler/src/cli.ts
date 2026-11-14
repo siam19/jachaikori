@@ -10,6 +10,7 @@ import { PoliteHttpClient } from './engine/http';
 import { runCrawlJob } from './engine/runner';
 import { getAllOutlets, getOutlet } from '@jachaikori/outlets';
 import type { OutletId } from '@jachaikori/schema';
+import { writeFileSync, mkdirSync } from 'node:fs';
 
 const program = new Command();
 
@@ -90,6 +91,42 @@ program
       }
     }
 
+    catalog.close();
+  });
+
+// Command: export
+program
+  .command('export')
+  .description('Exports harvested article URLs and titles from catalog.sqlite into a file')
+  .option('-o, --outlet <outletId>', 'Target outlet ID (e.g. business-standard)')
+  .option('-f, --format <format>', 'Export format: "txt" (urls only) or "jsonl"', 'txt')
+  .option('--output <filePath>', 'Destination file path (defaults to data/urls/<outlet>.txt)')
+  .action((opts) => {
+    const catalog = new CatalogDatabase();
+    const articles = catalog.getArticles(opts.outlet as OutletId | undefined);
+
+    if (articles.length === 0) {
+      console.log('No articles found in catalog to export.');
+      catalog.close();
+      return;
+    }
+
+    mkdirSync('data/urls', { recursive: true });
+    const targetFile =
+      opts.output ??
+      (opts.outlet
+        ? `data/urls/${opts.outlet}.${opts.format === 'jsonl' ? 'jsonl' : 'txt'}`
+        : `data/urls/all-articles.${opts.format === 'jsonl' ? 'jsonl' : 'txt'}`);
+
+    let content = '';
+    if (opts.format === 'jsonl') {
+      content = articles.map((a) => JSON.stringify(a)).join('\n') + '\n';
+    } else {
+      content = articles.map((a) => a.canonicalUrl).join('\n') + '\n';
+    }
+
+    writeFileSync(targetFile, content, 'utf8');
+    console.log(`✓ Exported ${articles.length} article URLs to ${targetFile}`);
     catalog.close();
   });
 

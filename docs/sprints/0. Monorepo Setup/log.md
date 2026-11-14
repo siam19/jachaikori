@@ -84,6 +84,33 @@ Local catalog harvester, rate limiter, SQLite catalog storage, and CLI.
 
 ---
 
+## 2026-11-14: URL File Export & Live Stream
+
+| File | Action | Reason |
+| :--- | :--- | :--- |
+| `tools/crawler/src/engine/runner.ts` | Modified | Automatically creates `data/urls/` and streams newly discovered clean URLs into `data/urls/<outlet>.txt` in real time. |
+| `tools/crawler/src/engine/catalog.ts` | Modified | Added `getArticles(outlet?)` query helper for exporting articles by outlet. |
+| `tools/crawler/src/cli.ts` | Modified | Added `export` command (`crawler export`) supporting `--format txt` (plain URLs) and `--format jsonl` (structured rows). |
+
+---
+
+## 2026-11-15: Individual Outlet Site Guides & Exploration
+
+Researched and documented comprehensive crawling specifications for all 8 in-scope outlets (omitting Dhaka Tribune) in `docs/newspapers/`:
+
+| File | Action | Key Findings & Content |
+| :--- | :--- | :--- |
+| `docs/newspapers/prothom-alo.md` | Populated | Search range via Unix ms timestamps, Next.js hydration, `.news_item_content`, `time.published-time` |
+| `docs/newspapers/bangladesh-protidin.md` | Populated | Cloudflare-protected (requires Playwright), `?page=N`, discovered date in article URL `/YYYY/MM/DD/` (no detail fetch needed) |
+| `docs/newspapers/jugantor.md` | Populated | Archive search form (`dateFrom`, `dateTo`, `page=N`), `.media.positionRelative`, exact timestamps in `p.desktopTime` |
+| `docs/newspapers/kaler-kantho.md` | Populated | Infinite stream with `button:has-text("আরও সংবাদ")`, discovered date in article URL `/YYYY/MM/DD/` |
+| `docs/newspapers/ittefaq.md` | Populated | Discovered direct AJAX endpoint `GET /api/theme_engine/get_ajax_contents?widget=565&start=20&archive_time=YYYY-MM-DD` (no Playwright needed) |
+| `docs/newspapers/the-daily-star.md` | Populated | Drupal views paginated with clean `?page=N` returning HTML, `.view-content .card`, English date parsing |
+| `docs/newspapers/the-business-standard.md` | Populated | Single-page daily archive `/archive/YYYY/MM/DD` (120-160 articles/day), `.card-list`, high-throughput generator |
+| `docs/newspapers/bdnews24-bangla.md` | Populated | Discovered public REST endpoint `GET /archive/fetch?section_id=...&limit=12&offset=N` returning JSON with HTML chunks |
+
+---
+
 ## Verification & Status
 
 - **Typecheck**: `bun run typecheck` passed (0 errors).

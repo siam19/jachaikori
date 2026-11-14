@@ -9,6 +9,8 @@ import type { OutletCrawler, CrawlContext } from '@jachaikori/outlets';
 import { CatalogDatabase } from './catalog';
 import { PoliteHttpClient } from './http';
 import { StopEvaluator } from './stop';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { canonicalizeUrl } from './url';
 
 export interface RunOptions {
   outlet: OutletCrawler;
@@ -79,6 +81,13 @@ export async function runCrawlJob(options: RunOptions): Promise<RunResult> {
 
         if (isNew) {
           newItemsSaved++;
+          try {
+            mkdirSync('data/urls', { recursive: true });
+            const cleanUrl = canonicalizeUrl(item.url, outlet.canonicalizeUrl);
+            appendFileSync(`data/urls/${outlet.id}.txt`, `${cleanUrl}\n`);
+          } catch {
+            // Non-fatal if file write fails
+          }
         }
 
         publishedDates.push(publishedAtIso);
