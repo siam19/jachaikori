@@ -1,0 +1,24 @@
+{
+  "name": "@jachaikori/crawler",
+  "version": "0.1.0",
+  "description": "Local Playwright & HTTP catalog harvester for 9 accredited Bangladeshi news outlets",
+  "main": "./src/cli.ts",
+  "bin": {
+    "crawler": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@jachaikori/schema": "workspace:*",
+    "@jachaikori/outlets": "workspace:*",
+    "commander": "^13.0.0",
+    "playwright": "^1.49.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

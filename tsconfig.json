@@ -1,0 +1,14 @@
+{
+  // Root TypeScript solution configuration. References sub-projects for IDE and CLI typechecking.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true
+  },
+  "include": [],
+  "references": [
+    { "path": "./packages/schema" },
+    { "path": "./packages/outlets" },
+    { "path": "./tools/crawler" }
+  ]
+}

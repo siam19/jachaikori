@@ -1,0 +1,19 @@
+{
+  // Root TypeScript configuration base extended by all packages, tools, and apps.
+  // Provides strict type safety, modern ES module resolution, and DOM/Bun runtime types.
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true
+  }
+}

@@ -1,1 +1,42 @@
+# Dependencies
+node_modules/
+bun.lockb
+bun.lock
+
+# Build artifacts
+dist/
+build/
+.turbo/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local Data and SQLite Databases (Crawler and local backfill)
+data/*
+!data/.gitkeep
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Logs and debug files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Agent skills
 .agents/

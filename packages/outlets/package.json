@@ -1,0 +1,15 @@
+{
+  "name": "@jachaikori/outlets",
+  "version": "0.1.0",
+  "description": "Pure parsers, extractors, and site-specific crawler contracts for the 9 accredited Bangladeshi outlets",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@jachaikori/schema": "workspace:*",
+    "cheerio": "^1.0.0"
+  }
+}
