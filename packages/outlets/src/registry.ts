@@ -5,6 +5,7 @@
 
 import type { OutletId } from '@jachaikori/schema';
 import type { OutletCrawler } from './types';
+import { BusinessStandardCrawler } from './outlets/business-standard';
 
 const registry = new Map<OutletId, OutletCrawler>();
 
@@ -23,3 +24,6 @@ export function getOutlet(id: OutletId): OutletCrawler {
 export function getAllOutlets(): OutletCrawler[] {
   return Array.from(registry.values());
 }
+
+// Automatically register default outlet implementations
+registerOutlet(new BusinessStandardCrawler());
