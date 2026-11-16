@@ -7,6 +7,12 @@
       "skillPath": "skills/agents-sdk/SKILL.md",
       "computedHash": "7522d2aa3b6b850e3778af08ba3f0d70d1dc9b8c2c5da47e7f2e3f5944e4d691"
     },
+    "clack-guidelines": {
+      "source": "diegosouzapw/awesome-omni-skill",
+      "sourceType": "github",
+      "skillPath": "skills/tools/clack-guidelines/SKILL.md",
+      "computedHash": "8d08a8e6cb42195337b1622503b63afbb16edf7ca7f529488749b5bef5ed9877"
+    },
     "cloudflare": {
       "source": "cloudflare/skills",
       "sourceType": "github",

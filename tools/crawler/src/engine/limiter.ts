@@ -13,6 +13,7 @@ export class DomainRateLimiter {
   private lastRequestTimes = new Map<string, number>();
   private consecutiveErrors = new Map<string, number>();
   private circuitOpenDomains = new Map<string, number>(); // domain -> openUntil timestamp
+  private domainDelays = new Map<string, number>(); // domain -> specific base delay in ms
 
   private baseDelayMs: number;
   private jitterMs: number;
@@ -22,6 +23,20 @@ export class DomainRateLimiter {
     this.baseDelayMs = options.baseDelayMs ?? 1000;
     this.jitterMs = options.jitterMs ?? 500;
     this.maxConsecutiveErrors = options.maxConsecutiveErrors ?? 5;
+  }
+
+  /**
+   * Overrides base delay for a specific domain (e.g. from outlet policy).
+   */
+  setDomainDelay(domain: string, delayMs: number): void {
+    this.domainDelays.set(domain, delayMs);
+  }
+
+  /**
+   * Retrieves configured delay for a domain or default base delay.
+   */
+  getDomainDelay(domain: string): number {
+    return this.domainDelays.get(domain) ?? this.baseDelayMs;
   }
 
   /**
@@ -37,7 +52,8 @@ export class DomainRateLimiter {
 
     const lastTime = this.lastRequestTimes.get(domain) ?? 0;
     const jitter = Math.floor(Math.random() * this.jitterMs);
-    const requiredDelay = this.baseDelayMs + jitter;
+    const domainDelay = this.domainDelays.get(domain) ?? this.baseDelayMs;
+    const requiredDelay = domainDelay + jitter;
     const elapsed = now - lastTime;
 
     if (elapsed < requiredDelay) {

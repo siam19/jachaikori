@@ -7,6 +7,7 @@
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
 import type { CrawlContext, OutletCrawler } from '../types';
+import { isAllowedArticleUrl } from '../filters';
 
 export class BusinessStandardCrawler implements OutletCrawler {
   readonly id = 'business-standard';
@@ -54,6 +55,7 @@ export class BusinessStandardCrawler implements OutletCrawler {
       const fullUrl = href.startsWith('http') ? href : `https://www.tbsnews.net${href.startsWith('/') ? '' : '/'}${href}`;
       if (seenUrls.has(fullUrl)) return;
       seenUrls.add(fullUrl);
+      if (!isAllowedArticleUrl(this.id, fullUrl)) return;
 
       const category = $(el).find('.date a, .category').first().text().trim() || undefined;
 
@@ -110,7 +112,7 @@ export class BusinessStandardCrawler implements OutletCrawler {
       // Advance one day backwards in time
       const nextDate = new Date(currentDate.getTime());
       nextDate.setDate(nextDate.getDate() - 1);
-      const nextDateStr = nextDate.toISOString().slice(0, 10);
+      const nextDateStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}-${String(nextDate.getDate()).padStart(2, '0')}`;
 
       yield {
         items,

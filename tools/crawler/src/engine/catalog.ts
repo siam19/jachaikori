@@ -91,6 +91,9 @@ export class CatalogDatabase {
     const nowIso = new Date().toISOString();
     const publishedAtIso = parsePublishedDate(item.publishedAtRaw);
 
+    const existing = this.db.prepare('SELECT 1 FROM article WHERE id = ?').get(articleId);
+    const isNew = !existing;
+
     const upsertStmt = this.db.prepare(`
       INSERT INTO article (
         id, outlet, canonical_url, original_url, title,
@@ -103,11 +106,10 @@ export class CatalogDatabase {
         title = COALESCE(NULLIF(excluded.title, ''), article.title),
         published_at = COALESCE(excluded.published_at, article.published_at),
         published_at_raw = COALESCE(NULLIF(excluded.published_at_raw, ''), article.published_at_raw),
-        updated_at = excluded.updated_at
-      RETURNING (created_at = updated_at) AS is_new;
+        updated_at = excluded.updated_at;
     `);
 
-    const result = upsertStmt.get({
+    upsertStmt.run({
       $id: articleId,
       $outlet: outlet,
       $canonicalUrl: canonical,
@@ -117,9 +119,7 @@ export class CatalogDatabase {
       $publishedAtRaw: item.publishedAtRaw,
       $createdAt: nowIso,
       $updatedAt: nowIso,
-    }) as { is_new: number } | undefined;
-
-    const isNew = Boolean(result?.is_new);
+    });
 
     // Record source linkage
     this.db.run(
@@ -208,6 +208,26 @@ export class CatalogDatabase {
   }
 
   /**
+   * Retrieves total count of discovered articles across all outlets.
+   */
+  getTotalArticleCount(): number {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM article').get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /**
+   * Retrieves count of articles linked to a specific outlet and source.
+   */
+  getArticleCountForSource(outlet: OutletId, sourceKey: string): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM article_source
+      WHERE outlet = ? AND source_key = ?
+    `).get(outlet, sourceKey) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /**
    * Retrieves summary statistics per outlet.
    */
   getOutletStats(): Array<{ outlet: string; totalArticles: number; oldestArticle: string | null; newestArticle: string | null }> {
@@ -243,6 +263,95 @@ export class CatalogDatabase {
       FROM article
       ORDER BY outlet ASC, published_at DESC, created_at DESC
     `).all() as any[];
+  }
+
+  /**
+   * Prunes articles that fail the URL allowlist filter, removes orphaned crawl_job rows,
+   * reconciles job article counts, and vacuums the SQLite database.
+   */
+  pruneCatalog(
+    isAllowed: (outlet: OutletId, canonicalUrl: string) => boolean,
+    validJobIds?: Set<string>
+  ): { deletedArticles: number; deletedJobs: number; remainingArticles: number } {
+    const rows = this.db
+      .prepare('SELECT id, outlet, canonical_url FROM article')
+      .all() as Array<{ id: string; outlet: OutletId; canonical_url: string }>;
+
+    const idsToDelete: string[] = [];
+    for (const row of rows) {
+      if (!isAllowed(row.outlet, row.canonical_url)) {
+        idsToDelete.push(row.id);
+      }
+    }
+
+    const deleteArticleStmt = this.db.prepare('DELETE FROM article WHERE id = ?');
+    const tx = this.db.transaction((ids: string[]) => {
+      for (const id of ids) {
+        deleteArticleStmt.run(id);
+      }
+    });
+
+    if (idsToDelete.length > 0) {
+      tx(idsToDelete);
+    }
+
+    let deletedJobs = 0;
+    if (validJobIds) {
+      const jobs = this.db.prepare('SELECT id FROM crawl_job').all() as Array<{ id: string }>;
+      const deleteJobStmt = this.db.prepare('DELETE FROM crawl_job WHERE id = ?');
+      for (const job of jobs) {
+        if (!validJobIds.has(job.id)) {
+          deleteJobStmt.run(job.id);
+          deletedJobs++;
+        }
+      }
+    }
+
+    // Reconcile crawl_job.items_found against article_source
+    this.db.run(`
+      UPDATE crawl_job
+      SET items_found = (
+        SELECT COUNT(*)
+        FROM article_source
+        WHERE article_source.outlet = crawl_job.outlet
+          AND article_source.source_key = crawl_job.source_key
+      )
+    `);
+
+    if (idsToDelete.length > 0 || deletedJobs > 0) {
+      this.db.run('VACUUM;');
+    }
+
+    return {
+      deletedArticles: idsToDelete.length,
+      deletedJobs,
+      remainingArticles: this.getTotalArticleCount(),
+    };
+  }
+
+  /**
+   * Returns daily article counts per outlet within an optional date window [fromDate, toDate] (YYYY-MM-DD).
+   */
+  getDailyCounts(
+    fromDate?: string,
+    toDate?: string
+  ): Array<{ outlet: string; day: string; count: number }> {
+    let sql = `
+      SELECT outlet, substr(published_at, 1, 10) as day, COUNT(*) as count
+      FROM article
+      WHERE published_at IS NOT NULL
+    `;
+    const params: string[] = [];
+    if (fromDate) {
+      sql += ' AND substr(published_at, 1, 10) >= ?';
+      params.push(fromDate);
+    }
+    if (toDate) {
+      sql += ' AND substr(published_at, 1, 10) <= ?';
+      params.push(toDate);
+    }
+    sql += ' GROUP BY outlet, day ORDER BY outlet ASC, day ASC';
+    return this.db.prepare(sql).all(...params) as Array<{ outlet: string; day: string; count: number }>;
   }
 
   /**

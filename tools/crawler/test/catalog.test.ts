@@ -6,7 +6,6 @@
 import { describe, expect, it } from 'bun:test';
 import { canonicalizeUrl } from '../src/engine/url';
 import { CatalogDatabase } from '../src/engine/catalog';
-import { unlinkSync } from 'node:fs';
 
 describe('URL Canonicalization', () => {
   it('strips tracking parameters, fragments, and trailing slashes', () => {
@@ -21,14 +20,8 @@ describe('URL Canonicalization', () => {
 });
 
 describe('CatalogDatabase (SQLite)', () => {
-  const testDbPath = 'data/test-catalog.sqlite';
-
   it('initializes schema and handles idempotent upserts', () => {
-    try {
-      unlinkSync(testDbPath);
-    } catch {}
-
-    const catalog = new CatalogDatabase(testDbPath);
+    const catalog = new CatalogDatabase(':memory:');
 
     const first = catalog.upsertDiscoveredItem('business-standard', 'national', {
       url: 'https://www.tbsnews.net/bangladesh/article-1?utm_source=fb',
@@ -65,9 +58,22 @@ describe('CatalogDatabase (SQLite)', () => {
     expect(updated.itemsFound).toBe(25);
     expect(updated.cursor).toBe('{"page":2}');
 
+    // Pruning off-topic rows and stale jobs
+    catalog.upsertDiscoveredItem('business-standard', 'archive', {
+      url: 'https://www.tbsnews.net/videos/live-stream-99',
+      title: 'Off-topic video',
+      publishedAtRaw: '2026-10-30T11:00:00Z',
+    });
+    catalog.getOrCreateJob('business-standard', 'stale-source');
+
+    const pruneRes = catalog.pruneCatalog(
+      (_outlet, url) => !url.includes('/videos/'),
+      new Set(['business-standard:national'])
+    );
+    expect(pruneRes.deletedArticles).toBe(1);
+    expect(pruneRes.deletedJobs).toBe(1);
+    expect(pruneRes.remainingArticles).toBe(1);
+
     catalog.close();
-    try {
-      unlinkSync(testDbPath);
-    } catch {}
   });
 });

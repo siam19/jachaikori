@@ -21,10 +21,14 @@ export class PoliteHttpClient {
   constructor(options: HttpClientOptions = {}) {
     this.userAgent =
       options.userAgent ??
-      'Jachaikori-Crawler/1.0 (+https://github.com/jachaikori/jachaikori; contact: research@jachaikori.org)';
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Jachaikori-Crawler/1.0 (+https://github.com/jachaikori/jachaikori)';
     this.limiter = options.limiter ?? new DomainRateLimiter();
     this.maxRetries = options.maxRetries ?? 3;
     this.timeoutMs = options.timeoutMs ?? 15_000;
+  }
+
+  getLimiter(): DomainRateLimiter {
+    return this.limiter;
   }
 
   /**

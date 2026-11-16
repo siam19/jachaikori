@@ -12,9 +12,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@jachaikori/schema": "workspace:*",
+    "@clack/prompts": "^1.9.0",
     "@jachaikori/outlets": "workspace:*",
+    "@jachaikori/schema": "workspace:*",
     "commander": "^13.0.0",
+    "picocolors": "^1.1.1",
     "playwright": "^1.49.0",
     "yaml": "^2.7.0"
   },

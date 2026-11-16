@@ -21,6 +21,11 @@ export interface CrawlContext {
   fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T>;
 
   /**
+   * Optional browser-rendered HTML fetch (for Cloudflare-protected or JS-rendered pages).
+   */
+  fetchPageHtml?(url: string, options?: { waitForSelector?: string }): Promise<string>;
+
+  /**
    * Saved cursor from the last batch or previous run (opaque JSON string).
    */
   cursor?: string | null;

@@ -21,7 +21,12 @@ export class BrowserPool {
     if (!this.browser) {
       this.browser = await chromium.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+        ],
       });
     }
     return this.browser;
@@ -33,7 +38,10 @@ export class BrowserPool {
   async createPolitePage(): Promise<{ context: BrowserContext; page: Page }> {
     const browser = await this.getBrowser();
     const context = await browser.newContext({
-      userAgent: 'Jachaikori-Crawler/1.0 (+https://github.com/jachaikori/jachaikori; contact: research@jachaikori.org)',
+      userAgent:
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      locale: 'bn-BD',
+      timezoneId: 'Asia/Dhaka',
       viewport: { width: 1280, height: 800 },
     });
 
@@ -57,6 +65,30 @@ export class BrowserPool {
     });
 
     return { context, page };
+  }
+
+  /**
+   * Fetches rendered HTML using a lightweight headless browser page.
+   */
+  async fetchRenderedHtml(
+    url: string,
+    options?: { waitForSelector?: string; timeoutMs?: number }
+  ): Promise<string> {
+    const { context, page } = await this.createPolitePage();
+    try {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: options?.timeoutMs ?? 25_000,
+      });
+
+      if (options?.waitForSelector) {
+        await page.waitForSelector(options.waitForSelector, { timeout: 10_000 }).catch(() => {});
+      }
+
+      return await page.content();
+    } finally {
+      await context.close();
+    }
   }
 
   async close(): Promise<void> {

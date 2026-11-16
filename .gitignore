@@ -2,6 +2,7 @@
 node_modules/
 bun.lockb
 bun.lock
+.agents/
 
 # Build artifacts
 dist/

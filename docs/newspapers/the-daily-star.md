@@ -16,32 +16,35 @@ The Daily Star does not have a comprehensive public date archive search. Content
 
 ### Target Categories:
 - **Politics (`politics`):** `https://www.thedailystar.net/news/politics`
-- **Governance (`national`):** `https://www.thedailystar.net/news/governance`
-- **Crime & Justice (`law-courts`):** `https://www.thedailystar.net/news/crime-justice`
+- **Governance (`governance`):** `https://www.thedailystar.net/news/governance`
+- **Crime & Justice (`crime-justice`):** `https://www.thedailystar.net/news/crime-justice`
 - **Economy (`economy`):** `https://www.thedailystar.net/business/economy`
-- **Startups (`economy`):** `https://www.thedailystar.net/business/startups`
-- **Accidents & Fires (`general`):** `https://www.thedailystar.net/news/accidents-and-fires`
+- **Startups (`startups`):** `https://www.thedailystar.net/business/startups`
+- **Accidents & Fires (`accidents-and-fires`):** `https://www.thedailystar.net/news/accidents-and-fires`
 
 ---
 
 ## 3. Pagination Discovery
 
-The UI renders a **"Show More"** link at the bottom of `.view-content`:
-```html
-<li class="pager__item">
-  <a href="?page=1">Show More</a>
-</li>
+The Daily Star uses Drupal 10 with the `views_show_more` module.
+**Crucial Finding:** Standard query parameter `?page=N` on full HTML category pages is **ignored** by Drupal 10 (it returns static page 0 indefinitely).
+
+Pagination is exclusively delivered via the Drupal AJAX endpoint:
+```http
+GET https://www.thedailystar.net/views/ajax?view_name=category_show_more&view_display_id=block_1&view_args=<termId>&page=N&_drupal_ajax=1
+X-Requested-With: XMLHttpRequest
+Accept: application/json, text/javascript, */*; q=0.01
 ```
 
-### Both Query Param & Drupal AJAX Work:
-1. **Plain Query Param (`?page=N`):**
-   - Simply navigating or fetching `https://www.thedailystar.net/news/politics?page=1`, `?page=2`, etc., renders the full HTML with the next batch of articles directly!
-2. **Drupal Views AJAX Endpoint:**
-   - The interactive button calls:
-     ```
-     GET https://www.thedailystar.net/views/ajax?view_name=category_show_more&view_display_id=block_1&view_args=<termId>&page=1&_drupal_ajax=1
-     ```
-   - However, since standard `?page=N` returns full HTML, we do not need to parse Drupal AJAX JSON commands! Standard HTTP `fetch(".../news/politics?page=" + page)` is 100% sufficient.
+### Discovery Workflow:
+1. **Initial Page (`page = 0`):**
+   - Fetch category URL (e.g. `https://www.thedailystar.net/news/bangladesh`).
+   - Parse top articles from HTML.
+   - Extract `view_name`, `view_display_id`, and taxonomy `view_args` from `script[data-drupal-selector="drupal-settings-json"]` (`data.views.ajaxViews`).
+2. **Subsequent Pages (`page >= 1`):**
+   - Request the `/views/ajax` endpoint with the extracted `view_args`.
+   - Parse JSON response array and locate `viewsShowMore` / `insert` command data.
+   - Each page yields 20 chronologically paginated articles with clean ISO `time[datetime]`.
 
 ---
 

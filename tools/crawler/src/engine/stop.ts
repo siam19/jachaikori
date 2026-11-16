@@ -8,11 +8,17 @@ export interface StopEvaluatorOptions {
   consecutiveBeforeCutoffLimit?: number; // default: 30
   maxEmptyBatches?: number; // default: 2
   maxSafetyBatches?: number; // default: 1000
+  maxConsecutiveDuplicateBatches?: number; // default: 2
 }
 
 export interface BatchEvaluation {
   shouldStop: boolean;
-  reason?: 'cutoff_reached' | 'empty_batches' | 'max_batches_exceeded' | 'source_exhausted';
+  reason?:
+    | 'cutoff_reached'
+    | 'empty_batches'
+    | 'max_batches_exceeded'
+    | 'source_exhausted'
+    | 'pagination_loop_detected';
   consecutiveBeforeCutoff: number;
 }
 
@@ -21,9 +27,12 @@ export class StopEvaluator {
   private consecutiveBeforeCutoffLimit: number;
   private maxEmptyBatches: number;
   private maxSafetyBatches: number;
+  private maxConsecutiveDuplicateBatches: number;
 
   private consecutiveBeforeCutoff = 0;
   private consecutiveEmptyBatches = 0;
+  private consecutiveIdenticalBatches = 0;
+  private lastBatchUrls = new Set<string>();
   private totalBatches = 0;
 
   constructor(options: StopEvaluatorOptions) {
@@ -35,13 +44,40 @@ export class StopEvaluator {
     this.consecutiveBeforeCutoffLimit = options.consecutiveBeforeCutoffLimit ?? 30;
     this.maxEmptyBatches = options.maxEmptyBatches ?? 2;
     this.maxSafetyBatches = options.maxSafetyBatches ?? 1000;
+    this.maxConsecutiveDuplicateBatches = options.maxConsecutiveDuplicateBatches ?? 2;
   }
 
   /**
-   * Evaluates a batch of published ISO dates against cutoff and safety limits.
+   * Evaluates a batch of published ISO dates against cutoff, duplicate loops, and safety limits.
    */
-  evaluateBatch(publishedIsoDates: Array<string | null>, nextCursor: string | null): BatchEvaluation {
+  evaluateBatch(
+    publishedIsoDates: Array<string | null>,
+    nextCursor: string | null,
+    batchUrls?: string[]
+  ): BatchEvaluation {
     this.totalBatches++;
+
+    // Check for pagination loops where a website server ignores ?page=N and returns the identical set of URLs
+    if (batchUrls && batchUrls.length > 0) {
+      if (this.lastBatchUrls.size > 0 && batchUrls.length === this.lastBatchUrls.size) {
+        const allUrlsIdentical = batchUrls.every((url) => this.lastBatchUrls.has(url));
+        if (allUrlsIdentical) {
+          this.consecutiveIdenticalBatches++;
+          if (this.consecutiveIdenticalBatches >= this.maxConsecutiveDuplicateBatches) {
+            return {
+              shouldStop: true,
+              reason: 'pagination_loop_detected',
+              consecutiveBeforeCutoff: this.consecutiveBeforeCutoff,
+            };
+          }
+        } else {
+          this.consecutiveIdenticalBatches = 0;
+        }
+      } else {
+        this.consecutiveIdenticalBatches = 0;
+      }
+      this.lastBatchUrls = new Set(batchUrls);
+    }
 
     if (publishedIsoDates.length === 0) {
       this.consecutiveEmptyBatches++;

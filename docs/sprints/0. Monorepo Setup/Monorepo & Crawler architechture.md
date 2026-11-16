@@ -220,19 +220,19 @@ outlets:
 
 ### Outlet tracker
 
-Fill this in as each site is investigated with recon.
+Updated at Sprint 1 close-out (2026-11-17):
 
-| Outlet | File | Paging mechanism | Sources chosen | Status |
+| Outlet | File | Paging mechanism | Sources / Allowlist | Status |
 | --- | --- | --- | --- | --- |
-| Prothom Alo | `outlets/prothom-alo.ts` | | | Not checked |
-| Bangladesh Protidin | `outlets/bangladesh-protidin.ts` | | | Not checked |
-| Daily Jugantor | `outlets/jugantor.ts` | | | Not checked |
-| Kaler Kantho | `outlets/kaler-kantho.ts` | | | Not checked |
-| Ittefaq | `outlets/ittefaq.ts` | | | Not checked |
-| The Daily Star | `outlets/daily-star.ts` | | | Not checked |
-| Dhaka Tribune | `outlets/dhaka-tribune.ts` | | | Not checked |
-| The Business Standard | `outlets/business-standard.ts` | | | Not checked |
-| bdnews24 | `outlets/bdnews24.ts` | | | Not checked |
+| Prothom Alo | `packages/outlets/src/outlets/prothom-alo.ts` | Quintype `/api/v1/advanced-search` (`published-after`/`before` ms + `offset`) | `bangladesh`, `politics`, `economy` (11 commerce IDs) | Verified (3,320 in DB; pagination upgraded) |
+| Bangladesh Protidin | `packages/outlets/src/outlets/bangladesh-protidin.ts` | Daily XML sitemaps (`/daily-sitemap/YYYY-MM-DD/sitemap.xml`) | Strict URL allowlist (national, country, city, politics, economy, print) | Harvested (26,778 clean) |
+| Daily Jugantor | `packages/outlets/src/outlets/jugantor.ts` | Playwright `/archive?dateFrom=...&dateTo=...&page=N` | Strict URL allowlist (national, country-news, politics, court, economics) | Verified (2,373 in DB; page cap raised) |
+| Kaler Kantho | `packages/outlets/src/outlets/kaler-kantho.ts` | Daily XML sitemaps (`/daily-sitemap/YYYY-MM-DD/sitemap.xml`) | Strict URL allowlist (`online/*` + `print-edition/*` core news/business) | Harvested (26,721 clean) |
+| Ittefaq | `packages/outlets/src/outlets/ittefaq.ts` | `/archive/YYYY-MM-DD` + `/api/theme_engine/get_ajax_contents` JSON | Category tag allowlist (`national`, `country`, `politics`, `business`, `capital`) | Verified (2,187 in DB; AJAX JSON fixed) |
+| The Daily Star | `packages/outlets/src/outlets/daily-star.ts` | Drupal 10 Views `/views/ajax` (`page=N`) | `politics`, `governance`, `crime-justice`, `economy`, `startups`, `accidents-and-fires` | Harvested (3,946 clean) |
+| Dhaka Tribune | — | — | Out of scope for initial 8-outlet phase | Deferred |
+| The Business Standard | `packages/outlets/src/outlets/business-standard.ts` | Daily HTML archive (`/archive/YYYY/MM/DD`) | Strict URL allowlist (`bangladesh`, `economy`, `nbr`, `markets`, `rohingya-crisis`, etc.) | Harvested (10,634 clean) |
+| bdnews24 | `packages/outlets/src/outlets/bdnews24.ts` | REST JSON `/archive/fetch?section_id=...&offset=N` | `national`, `politics`, `economy`, `commerce`, `court` | Harvested (4,250 clean) |
 
 ### Build order
 
@@ -281,11 +281,21 @@ jachaikori/
 - Deploys are per app: `wrangler deploy` for `api` and `ingest`, Pages for `web`, and `gcloud run deploy` for the verifier via Workload Identity Federation.
 - Build order follows the roadmap: `packages/schema`, `packages/outlets` and `tools/crawler` come first, since the catalog is needed before anything else.
 
+## Corpus sizing (Sprint 1 post-prune audit)
+
+After pruning off-topic sections (`world`, `sports`, `entertainment`, `multimedia`/`videos`, `govt-ad`, `lifestyle`, `campus`, `editorial`), the 3.5-month catalog (`2026-08-01` → `2026-11-15`) holds **80,209 clean articles** (~755 articles/day, or ~950/day once deferred pagination top-ups run on Prothom Alo, Ittefaq, and Jugantor):
+
+- **Cloudflare D1 + FTS5:** At ~4 KB clean UTF-8 Bangla text per article, 80k articles require ~320 MB table storage + ~350 MB FTS5 index (**~0.7 GB total**, or ~2.5 GB/year), well within the 5 GB included on Cloudflare Workers Paid ($5/mo) and the 10 GB per-database limit.
+- **Cloudflare Vectorize (BGE-M3, 1,024 dims):**
+  - *Full-body chunking (5 chunks/article):* ~400k vectors = 410M stored dims → ~$4.05/mo on Vectorize alone, crowding the $5/mo ceiling.
+  - *Decision for Sprint 2 — Single Lead Vector + Full-Text FTS5:* Embed **1 vector per article** (`title + lead 2–3 paragraphs`, ~300 tokens) into Vectorize for semantic retrieval (**80k × 1,024 = 82M dims → ~$0.77/mo** beyond the 5M included tier), while indexing the **full clean article text** in D1 FTS5 for exact names, quotes, dates, and figures.
+- **Workers AI BGE-M3 Backfill Cost:** 80k × ~300 tokens ≈ 24M tokens (~$0.29 one-time).
+
 ## Open items
 
-- [ ] Choose the categories to crawl per outlet and the shared topic list (national, politics, economy, world and so on). Sports and similar sections stay out of the plan.
-- [ ] Review each outlet's robots.txt and terms, and note whether it offers RSS or a sitemap. Record the result in each outlet file's `policy`.
-- [ ] Run `recon` on all nine outlets and fill the outlet tracker.
-- [ ] After the first full crawl, use the catalog row count to size D1, Vectorize and the embedding cost against the 5 USD per month ceiling.
-- [ ] Confirm the Cloudflare plan limits for D1 size, Vectorize stored dimensions and Workers AI embedding volume.
+- [x] Choose the categories to crawl per outlet and enforce strict URL/category allowlists in `packages/outlets/src/filters.ts` (national, district/city, politics, court, business/economy, print news; world and sports excluded).
+- [x] Review each outlet's robots.txt and terms, and note whether it offers RSS or a sitemap. Recorded in `docs/newspapers/*.md` and each outlet's `policy`.
+- [x] Run `recon` on all eight active outlets and fill the outlet tracker.
+- [x] After the first crawl, use the catalog row count (80,209 clean articles) to size D1, Vectorize, and embedding costs against the 5 USD per month ceiling.
+- [ ] Confirm live Cloudflare account binding quotas before bulk load in Sprint 2.
 - [ ] Decide whether the verifier stays on Cloud Run or whether a Worker calls Gemini directly. Cloud Run costs one extra network hop but keeps all model calls in one service.
