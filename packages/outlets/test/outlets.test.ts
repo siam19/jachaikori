@@ -243,7 +243,7 @@ describe('Daily Jugantor Parser', () => {
 describe('Bangladesh Pratidin Parser', () => {
   const crawler = new BangladeshProtidinCrawler();
 
-  it('parses daily sitemap XML entries and keeps national/district while dropping international/sports', () => {
+  it('parses daily sitemap XML entries and keeps core national/politics/economy while dropping country/international/sports', () => {
     const xml = `
       <?xml version="1.0" encoding="UTF-8"?>
       <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
@@ -255,10 +255,17 @@ describe('Bangladesh Pratidin Parser', () => {
           </news:news>
         </url>
         <url>
-          <loc>https://www.bd-pratidin.com/country/2026/11/14/1326218</loc>
+          <loc>https://www.bd-pratidin.com/minister-speech/2026/11/14/1326218</loc>
           <news:news>
             <news:publication_date>2026-11-14T13:00:00+06:00</news:publication_date>
-            <news:title>জেলা পর্যায়ে নতুন সড়ক প্রকল্প</news:title>
+            <news:title>জ্বালানি খাতে নতুন নীতিমালা ঘোষণা</news:title>
+          </news:news>
+        </url>
+        <url>
+          <loc>https://www.bd-pratidin.com/country/2026/11/14/1326221</loc>
+          <news:news>
+            <news:publication_date>2026-11-14T13:05:00+06:00</news:publication_date>
+            <news:title>উপজেলা সংবাদ</news:title>
           </news:news>
         </url>
         <url>
@@ -280,14 +287,14 @@ describe('Bangladesh Pratidin Parser', () => {
     const items = crawler.parseListing(xml);
     expect(items.length).toBe(2);
     expect(items[0].url).toBe('https://www.bd-pratidin.com/national/2026/11/14/1326217');
-    expect(items[1].url).toBe('https://www.bd-pratidin.com/country/2026/11/14/1326218');
+    expect(items[1].url).toBe('https://www.bd-pratidin.com/minister-speech/2026/11/14/1326218');
   });
 });
 
 describe('Kaler Kantho Parser', () => {
   const crawler = new KalerKanthoCrawler();
 
-  it('parses daily sitemap XML entries and keeps online/print news while dropping world/sports/multimedia', () => {
+  it('parses daily sitemap XML entries and keeps core online sections while dropping print-edition/country-news/world/sports', () => {
     const xml = `
       <?xml version="1.0" encoding="UTF-8"?>
       <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
@@ -296,6 +303,13 @@ describe('Kaler Kantho Parser', () => {
           <news:news>
             <news:publication_date>2026-11-14T16:49:26+06:00</news:publication_date>
             <news:title>ডিসেম্বর পর্যন্ত গ্যাসের চাহিদা মেটানোর মজুদ আছে : জ্বালানিমন্ত্রী</news:title>
+          </news:news>
+        </url>
+        <url>
+          <loc>https://www.kalerkantho.com/online/business/2026/11/14/1767607</loc>
+          <news:news>
+            <news:publication_date>2026-11-14T16:55:00+06:00</news:publication_date>
+            <news:title>রপ্তানি আয় বেড়েছে</news:title>
           </news:news>
         </url>
         <url>
@@ -324,13 +338,14 @@ describe('Kaler Kantho Parser', () => {
     const items = crawler.parseListing(xml);
     expect(items.length).toBe(2);
     expect(items[0].url).toBe('https://www.kalerkantho.com/online/national/2026/11/14/1767603');
-    expect(items[1].url).toBe('https://www.kalerkantho.com/print-edition/first-page/2026/11/14/1767604');
+    expect(items[1].url).toBe('https://www.kalerkantho.com/online/business/2026/11/14/1767607');
   });
 
   it('validates case-insensitive URL allowlisting in filters', () => {
     expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/online/Politics/2026/11/14/100')).toBe(true);
     expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/online/Court/2026/11/14/101')).toBe(true);
+    expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/online/country-news/2026/11/14/104')).toBe(false);
     expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/online/sport/2026/11/14/102')).toBe(false);
-    expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/print-edition/deshe-deshe/2026/11/14/103')).toBe(false);
+    expect(isAllowedArticleUrl('kaler-kantho', 'https://www.kalerkantho.com/print-edition/first-page/2026/11/14/103')).toBe(false);
   });
 });

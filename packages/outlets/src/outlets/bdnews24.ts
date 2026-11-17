@@ -6,8 +6,16 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  splitArticleBody,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 interface BdNewsArchiveResponse {
   html?: string;
@@ -90,6 +98,42 @@ export class BdNews24Crawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from bdnews24 HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      ld?.datePublished ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        ''
+    );
+
+    const domByline = normalizeWhitespace($('.detail-author-name, .pub-up .author').first().text());
+    const byline = domByline || extractJsonLdAuthor(ld?.author) || null;
+
+    const domBody = extractParagraphs($, '.details-brief');
+    const body = domBody.cleanText ? domBody : splitArticleBody(ld?.articleBody);
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

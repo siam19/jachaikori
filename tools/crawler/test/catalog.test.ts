@@ -1,15 +1,20 @@
 /**
  * @file tools/crawler/test/catalog.test.ts
- * Tests for URL canonicalization and SQLite catalog upserts.
+ * Tests for URL canonicalization, SQLite catalog upserts, scrape persistence, and rate limiter cancellation.
  */
 
 import { describe, expect, it } from 'bun:test';
+import { Database } from 'bun:sqlite';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { canonicalizeUrl } from '../src/engine/url';
 import { CatalogDatabase } from '../src/engine/catalog';
+import { DomainRateLimiter } from '../src/engine/limiter';
 
 describe('URL Canonicalization', () => {
   it('strips tracking parameters, fragments, and trailing slashes', () => {
-    const raw = 'https://www.tbsnews.net/bangladesh/politics/article-123/?utm_source=facebook&utm_medium=cpc&fbclid=XYZ#comments';
+    const raw =
+      'https://www.tbsnews.net/bangladesh/politics/article-123/?utm_source=facebook&utm_medium=cpc&fbclid=XYZ#comments';
     expect(canonicalizeUrl(raw)).toBe('https://www.tbsnews.net/bangladesh/politics/article-123');
   });
 
@@ -70,10 +75,129 @@ describe('CatalogDatabase (SQLite)', () => {
       (_outlet, url) => !url.includes('/videos/'),
       new Set(['business-standard:national'])
     );
-    expect(pruneRes.deletedArticles).toBe(1);
+    expect(pruneRes.skippedArticles).toBe(1);
+    expect(pruneRes.deletedArticles).toBe(0);
     expect(pruneRes.deletedJobs).toBe(1);
     expect(pruneRes.remainingArticles).toBe(1);
+    expect(catalog.getTotalArticleCount(true)).toBe(2);
 
     catalog.close();
+  });
+
+  it('migrates legacy schema seamlessly and persists extracted/failed articles for interrupt-safe resume', () => {
+    const dbPath = join(import.meta.dir, '.legacy-migration-test.sqlite');
+    rmSync(dbPath, { force: true });
+    rmSync(`${dbPath}-wal`, { force: true });
+    rmSync(`${dbPath}-shm`, { force: true });
+
+    try {
+      // Simulate Sprint 1 schema without `lead` or `last_error` columns
+      const rawDb = new Database(dbPath, { create: true });
+      rawDb.run(`
+        CREATE TABLE article (
+          id TEXT PRIMARY KEY,
+          outlet TEXT NOT NULL,
+          canonical_url TEXT NOT NULL UNIQUE,
+          original_url TEXT NOT NULL,
+          title TEXT NOT NULL,
+          published_at TEXT,
+          published_at_raw TEXT,
+          fetched_at TEXT,
+          status TEXT NOT NULL DEFAULT 'discovered',
+          raw_html_pointer TEXT,
+          clean_text TEXT,
+          byline TEXT,
+          pipeline_version TEXT NOT NULL DEFAULT 'v1',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      rawDb.close();
+
+      // Open with CatalogDatabase — should auto-migrate `lead` and `last_error`
+      const catalog = new CatalogDatabase(dbPath);
+
+      const older = catalog.upsertDiscoveredItem('prothom-alo', 'bangladesh', {
+        url: 'https://www.prothomalo.com/bangladesh/older-1',
+        title: 'Older Headline',
+        publishedAtRaw: '2026-11-01T10:00:00Z',
+      });
+      const newer = catalog.upsertDiscoveredItem('prothom-alo', 'politics', {
+        url: 'https://www.prothomalo.com/politics/newer-2',
+        title: 'Newer Headline',
+        publishedAtRaw: '2026-11-10T12:00:00Z',
+      });
+
+      // Queue orders newest first
+      const queue1 = catalog.getPendingArticlesForOutlet('prothom-alo');
+      expect(queue1.map((q) => q.id)).toEqual([newer.articleId, older.articleId]);
+
+      // Save extracted article for newer item (with null publishedAtIso to test COALESCE preservation)
+      catalog.saveExtractedArticle(newer.articleId, {
+        title: 'Extracted Newer Headline',
+        publishedAtRaw: '১০ নভেম্বর ২০২৬',
+        publishedAtIso: null,
+        byline: 'নিজস্ব প্রতিবেদক',
+        lead: 'প্রথম অনুচ্ছেদ।',
+        cleanText: 'প্রথম অনুচ্ছেদ।\n\nদ্বিতীয় অনুচ্ছেদ বিস্তারিত সংবাদ।',
+      });
+
+      const savedNewer = catalog.getArticleById(newer.articleId);
+      expect(savedNewer?.status).toBe('extracted');
+      expect(savedNewer?.title).toBe('Extracted Newer Headline');
+      expect(savedNewer?.publishedAt).toBe('2026-11-10T12:00:00.000Z');
+      expect(savedNewer?.byline).toBe('নিজস্ব প্রতিবেদক');
+      expect(savedNewer?.lead).toBe('প্রথম অনুচ্ছেদ।');
+      expect(savedNewer?.cleanText).toContain('দ্বিতীয় অনুচ্ছেদ');
+      expect(savedNewer?.fetchedAt).toBeTruthy();
+
+      // Mark older article as failed
+      catalog.markArticleFailed(older.articleId, 'HTTP 502 Bad Gateway');
+      const failedOlder = catalog.getArticleById(older.articleId);
+      expect(failedOlder?.status).toBe('failed');
+      expect(failedOlder?.lastError).toBe('HTTP 502 Bad Gateway');
+
+      // Resuming without retryFailed sees 0 pending ('extracted' and 'failed' skipped)
+      expect(catalog.getPendingArticlesForOutlet('prothom-alo').length).toBe(0);
+
+      // Resuming with retryFailed picks up only the failed item
+      const retryQueue = catalog.getPendingArticlesForOutlet('prothom-alo', { retryFailed: true });
+      expect(retryQueue.map((q) => q.id)).toEqual([older.articleId]);
+
+      const progress = catalog.getScrapeProgressByOutlet();
+      expect(progress).toEqual([
+        {
+          outlet: 'prothom-alo',
+          activeTotal: 2,
+          extractedCount: 1,
+          failedCount: 1,
+          pendingCount: 0,
+        },
+      ]);
+
+      catalog.close();
+    } finally {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
+  });
+});
+
+describe('DomainRateLimiter', () => {
+  it('reserves slots atomically and cancels waits immediately on AbortSignal', async () => {
+    const limiter = new DomainRateLimiter({ baseDelayMs: 5000, minJitterMs: 0, jitterMs: 0 });
+
+    // First acquire on fresh domain resolves immediately and reserves +5000ms slot
+    await limiter.acquire('prothomalo.com');
+    expect(limiter.getWaitRemainingMs('prothomalo.com')).toBeGreaterThan(4000);
+
+    // Second acquire waits on the reserved slot, and aborts immediately when signal fires
+    const ac = new AbortController();
+    const start = Date.now();
+    setTimeout(() => ac.abort(), 30);
+
+    await expect(limiter.acquire('prothomalo.com', ac.signal)).rejects.toThrow();
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });

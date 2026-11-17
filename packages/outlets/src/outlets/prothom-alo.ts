@@ -7,8 +7,16 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { extractUrlSection, isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  splitArticleBody,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 interface ProthomAloSearchStory {
   headline?: string;
@@ -119,6 +127,49 @@ export class ProthomAloCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from Prothom Alo HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      ld?.datePublished ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        $('time[datetime]').first().attr('datetime') ||
+        ''
+    );
+
+    const domByline = normalizeWhitespace(
+      $('.author-name-location-wrapper, .author-details').first().text()
+    );
+    const byline =
+      domByline ||
+      extractJsonLdAuthor(ld?.author) ||
+      normalizeWhitespace($('meta[name="author"]').attr('content') || '') ||
+      null;
+
+    const domBody = extractParagraphs($, '.story-element-text', { allContainers: true });
+    const body = domBody.cleanText ? domBody : splitArticleBody(ld?.articleBody);
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

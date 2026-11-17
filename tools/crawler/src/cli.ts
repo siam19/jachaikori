@@ -12,6 +12,8 @@ import { CatalogDatabase } from './engine/catalog';
 import { PoliteHttpClient } from './engine/http';
 import { BrowserPool } from './engine/browser';
 import { runCrawlJob } from './engine/runner';
+import { runArticleScraper } from './engine/scraper';
+import type { ScrapeDashboard } from './ui/scrape-dashboard';
 import { getAllOutlets, getOutlet, isAllowedArticleUrl } from '@jachaikori/outlets';
 import type { OutletCrawler } from '@jachaikori/outlets';
 import type { OutletId } from '@jachaikori/schema';
@@ -35,21 +37,37 @@ program
 
     const catalog = new CatalogDatabase();
     const total = catalog.getTotalArticleCount();
+    const totalAll = catalog.getTotalArticleCount(true);
+    const totalSkipped = totalAll - total;
     const stats = catalog.getOutletStats();
 
     if (stats.length === 0) {
       p.log.warn('No articles harvested yet. Run `bun run crawler run` to start.');
     } else {
+      let totalExtracted = 0;
       const summaryLines = stats.map((s) => {
+        totalExtracted += s.extractedArticles;
         const oldest = s.oldestArticle ? s.oldestArticle.split('T')[0] : 'unknown';
         const newest = s.newestArticle ? s.newestArticle.split('T')[0] : 'unknown';
-        const nameCol = color.bold(color.cyan(s.outlet.padEnd(20)));
-        const countCol = color.yellow(s.totalArticles.toLocaleString().padStart(6)) + ' articles';
-        const datesCol = color.dim(`${oldest}  →  ${newest}`);
-        return `${nameCol} ${countCol}    ${datesCol}`;
+        const nameCol = color.bold(color.cyan(s.outlet.padEnd(19)));
+        const scrapedCol =
+          color.green(s.extractedArticles.toLocaleString().padStart(5)) +
+          color.dim('/') +
+          color.yellow(s.totalArticles.toLocaleString().padEnd(6)) +
+          ' scraped';
+        const skipCol =
+          s.skippedArticles > 0
+            ? color.dim(` (${s.skippedArticles.toLocaleString()} skip)`.padEnd(15))
+            : ' '.repeat(15);
+        const datesCol = color.dim(`${oldest} → ${newest}`);
+        return `${nameCol} ${scrapedCol}${skipCol} ${datesCol}`;
       });
 
-      p.note(summaryLines.join('\n'), `Catalog Total: ${color.bold(color.green(total.toLocaleString()))} Unique Articles`);
+      const pct = total > 0 ? ((totalExtracted / total) * 100).toFixed(1) : '0.0';
+      const skipBadge = totalSkipped > 0 ? ` · ${color.dim(totalSkipped.toLocaleString() + ' skipped')}` : '';
+      const header = `Scraped: ${color.bold(color.green(totalExtracted.toLocaleString()))} / ${color.bold(color.yellow(total.toLocaleString()))} Active (${pct}%)${skipBadge}`;
+
+      p.note(summaryLines.join('\n'), header);
     }
 
     p.outro(color.dim('Database: data/catalog.sqlite · URL exports: data/urls/'));
@@ -207,6 +225,97 @@ program
   });
 
 // ==========================================
+// Command: scrape
+// ==========================================
+program
+  .command('scrape')
+  .description('Concurrently scrapes full article bodies across outlets with polite pacing and static UI')
+  .option('-o, --outlet <outletId>', 'Target a single outlet ID (e.g. prothom-alo)')
+  .option('-l, --limit <number>', 'Max articles to scrape per outlet in this session', (val) => parseInt(val, 10))
+  .option(
+    '-j, --concurrency <number>',
+    'Max outlets to scrape concurrently (1 polite serial stream per outlet)',
+    (val) => parseInt(val, 10),
+    8
+  )
+  .option('--retry-failed', 'Include previously failed articles in the scrape queue', false)
+  .action(async (opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Polite Article Scraper ')));
+
+    const outlets = opts.outlet ? [getOutlet(opts.outlet as OutletId)] : getAllOutlets();
+    if (outlets.length === 0) {
+      p.log.error('No registered outlets found to scrape.');
+      process.exitCode = 1;
+      return;
+    }
+
+    const catalog = new CatalogDatabase();
+    const abortController = new AbortController();
+    let dashboardRef: ScrapeDashboard | null = null;
+    let sigintCount = 0;
+
+    const onSignal = () => {
+      sigintCount++;
+      if (sigintCount === 1) {
+        dashboardRef?.setShuttingDown(true);
+        abortController.abort();
+      } else {
+        // Second Ctrl+C: restore terminal cursor, checkpoint DB, and exit immediately
+        process.stdout.write('\x1b[?25h');
+        try {
+          catalog.close();
+        } catch {
+          // ignore
+        }
+        process.exit(130);
+      }
+    };
+
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+
+    try {
+      const summary = await runArticleScraper({
+        outlets,
+        catalog,
+        limitPerOutlet: opts.limit,
+        concurrency: Math.max(1, opts.concurrency ?? 8),
+        retryFailed: Boolean(opts.retryFailed),
+        signal: abortController.signal,
+        onShutdownTriggered: (dash) => {
+          dashboardRef = dash;
+        },
+      });
+
+      for (const res of summary.perOutlet) {
+        if (res.stoppedReason) {
+          p.log.warn(`${color.bold(color.yellow(res.outlet))}: ${res.stoppedReason}`);
+        }
+      }
+
+      const totalRemaining = summary.perOutlet.reduce((acc, r) => acc + r.remainingPending, 0);
+
+      if (summary.aborted) {
+        p.outro(
+          color.yellow(
+            `Paused cleanly · Saved +${summary.totalScrapedThisSession.toLocaleString()} articles to data/catalog.sqlite (${totalRemaining.toLocaleString()} pending to resume)`
+          )
+        );
+      } else {
+        p.outro(
+          color.green(
+            `Scrape finished · Saved +${summary.totalScrapedThisSession.toLocaleString()} articles to data/catalog.sqlite (${totalRemaining.toLocaleString()} remaining pending)`
+          )
+        );
+      }
+    } finally {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+      catalog.close();
+    }
+  });
+
+// ==========================================
 // Command: export
 // ==========================================
 program
@@ -286,8 +395,9 @@ program
 // ==========================================
 program
   .command('prune')
-  .description('Prunes off-topic articles and orphaned crawl_job entries according to strict outlet allowlists')
-  .action(() => {
+  .description('Marks disallowed articles as skipped (or deletes with --delete) and cleans orphaned jobs')
+  .option('--delete', 'Hard-delete disallowed articles instead of marking status="skipped"', false)
+  .action((opts) => {
     p.intro(color.bgCyan(color.black(' Jachaikori · Catalog Prune & Hygiene ')));
 
     const catalog = new CatalogDatabase();
@@ -299,18 +409,23 @@ program
     }
 
     const s = p.spinner();
-    s.start('Applying strict URL allowlists and cleaning orphaned jobs...');
-    const res = catalog.pruneCatalog(isAllowedArticleUrl, validJobIds);
-    s.stop(color.green('Catalog pruned and vacuumed!'));
+    s.start('Applying strict URL allowlists and reconciling catalog...');
+    const res = catalog.pruneCatalog(isAllowedArticleUrl, validJobIds, { hardDelete: opts.delete });
+    s.stop(color.green('Catalog updated!'));
 
-    p.note(
-      [
-        `${color.dim('Off-topic articles removed:')} ${color.yellow(res.deletedArticles.toLocaleString())}`,
-        `${color.dim('Orphaned jobs removed:')}      ${color.yellow(res.deletedJobs.toLocaleString())}`,
-        `${color.dim('Clean articles remaining:')}   ${color.bold(color.green(res.remainingArticles.toLocaleString()))}`,
-      ].join('\n'),
-      'Prune Summary'
+    const lines = opts.delete
+      ? [`${color.dim('Off-topic articles deleted:')}  ${color.yellow(res.deletedArticles.toLocaleString())}`]
+      : [
+          `${color.dim('Newly marked skipped:')}        ${color.yellow(res.skippedArticles.toLocaleString())}`,
+          `${color.dim('Restored to discovered:')}      ${color.cyan(res.restoredArticles.toLocaleString())}`,
+          `${color.dim('Total skipped in DB:')}         ${color.dim(res.totalSkipped.toLocaleString())}`,
+        ];
+    lines.push(
+      `${color.dim('Orphaned jobs removed:')}       ${color.yellow(res.deletedJobs.toLocaleString())}`,
+      `${color.dim('Active articles remaining:')}   ${color.bold(color.green(res.remainingArticles.toLocaleString()))}`
     );
+
+    p.note(lines.join('\n'), 'Prune Summary');
 
     catalog.close();
     p.outro(color.dim('Run `bun run crawler export` to sync data/urls/ exports.'));
@@ -371,6 +486,143 @@ program
   });
 
 // ==========================================
+// Command: verify-extract
+// ==========================================
+program
+  .command('verify-extract')
+  .description('Fetches sample live articles from catalog.sqlite and verifies extractArticle() output')
+  .option('-o, --outlet <outletId>', 'Target outlet ID (e.g. prothom-alo)')
+  .option('-n, --sample <number>', 'Random articles to sample per outlet', (val) => parseInt(val, 10), 2)
+  .option('-u, --url <url>', 'Test extraction on a specific URL (requires --outlet)')
+  .action(async (opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Article Extraction Verifier ')));
+
+    const catalog = new CatalogDatabase();
+    const httpClient = new PoliteHttpClient();
+    const browserPool = new BrowserPool();
+
+    let passed = 0;
+    let warned = 0;
+
+    async function fetchHtml(url: string): Promise<{ html: string; via: 'http' | 'playwright' }> {
+      try {
+        const html = await httpClient.fetchText(url);
+        if (html.includes('Just a moment') || html.length < 5000) {
+          throw new Error('Challenge or short HTML');
+        }
+        return { html, via: 'http' };
+      } catch {
+        const html = await browserPool.fetchRenderedHtml(url);
+        return { html, via: 'playwright' };
+      }
+    }
+
+    function checkWarnings(res: ReturnType<NonNullable<OutletCrawler['extractArticle']>>): string[] {
+      const warnings: string[] = [];
+      if (!res.title) warnings.push('EMPTY_TITLE');
+      if (!res.publishedAtIso) warnings.push('BAD_DATE');
+      if (res.cleanText.length < 200) warnings.push(`SHORT_BODY(${res.cleanText.length})`);
+      if (/googletag|<script|<div/i.test(res.cleanText)) warnings.push('HTML_OR_AD_LEAK');
+      return warnings;
+    }
+
+    try {
+      if (opts.url) {
+        if (!opts.outlet) {
+          p.log.error('Please specify --outlet <outletId> when testing a single --url.');
+          process.exitCode = 1;
+          return;
+        }
+        const outlet = getOutlet(opts.outlet as OutletId);
+        if (!outlet.extractArticle) {
+          p.log.error(`Outlet ${outlet.id} does not implement extractArticle().`);
+          process.exitCode = 1;
+          return;
+        }
+
+        const s = p.spinner();
+        s.start(`Fetching ${color.cyan(opts.url)}...`);
+        const { html, via } = await fetchHtml(opts.url);
+        const res = outlet.extractArticle(html, opts.url);
+        const warnings = checkWarnings(res);
+        s.stop(
+          warnings.length === 0
+            ? color.green(`Extracted cleanly via ${via}`)
+            : color.yellow(`Extracted with warnings via ${via}: ${warnings.join(', ')}`)
+        );
+
+        p.note(
+          [
+            `${color.dim('Title:')}    ${res.title}`,
+            `${color.dim('Date:')}     ${res.publishedAtIso ?? res.publishedAtRaw}`,
+            `${color.dim('Byline:')}   ${res.byline ?? '(none)'}`,
+            `${color.dim('Length:')}   ${res.cleanText.length} chars`,
+            `${color.dim('Lead:')}     ${res.lead?.slice(0, 140) ?? '(none)'}`,
+          ].join('\n'),
+          outlet.id
+        );
+        return;
+      }
+
+      const outlets = opts.outlet ? [getOutlet(opts.outlet as OutletId)] : getAllOutlets();
+      const sampleSize = Math.max(1, opts.sample ?? 2);
+
+      for (const outlet of outlets) {
+        if (!outlet.extractArticle) {
+          p.log.warn(`${outlet.id}: no extractArticle() implemented`);
+          continue;
+        }
+
+        const samples = catalog.sampleArticles(outlet.id, sampleSize);
+        if (samples.length === 0) {
+          p.log.warn(`${outlet.id}: no articles in catalog.sqlite`);
+          continue;
+        }
+
+        p.log.step(color.bold(color.cyan(`=== ${outlet.id} (${samples.length} samples) ===`)));
+
+        for (const row of samples) {
+          try {
+            const { html, via } = await fetchHtml(row.canonicalUrl);
+            const res = outlet.extractArticle(html, row.canonicalUrl);
+            const warnings = checkWarnings(res);
+
+            if (warnings.length === 0) {
+              passed++;
+              p.log.success(
+                `${color.green('OK')} ${color.dim(`[${via}]`)} ${color.cyan(row.canonicalUrl)}\n` +
+                  `   ${color.dim('Title:')}  ${res.title}\n` +
+                  `   ${color.dim('Date:')}   ${res.publishedAtIso} ${color.dim('| Byline:')} ${res.byline ?? '(none)'}\n` +
+                  `   ${color.dim('Body:')}   ${res.cleanText.length} chars — ${res.lead?.slice(0, 90) ?? ''}`
+              );
+            } else {
+              warned++;
+              p.log.warn(
+                `${color.yellow(warnings.join(', '))} ${color.dim(`[${via}]`)} ${color.cyan(row.canonicalUrl)}\n` +
+                  `   ${color.dim('Catalog:')}   ${row.title}\n` +
+                  `   ${color.dim('Extracted:')} ${res.title || '(empty)'}\n` +
+                  `   ${color.dim('Date:')}      ${res.publishedAtIso ?? res.publishedAtRaw ?? '(none)'} ${color.dim('| Body:')} ${res.cleanText.length} chars`
+              );
+            }
+          } catch (err: any) {
+            warned++;
+            p.log.error(`Failed fetching ${row.canonicalUrl}: ${err.message}`);
+          }
+        }
+      }
+
+      p.outro(
+        warned === 0
+          ? color.green(`All ${passed} sampled articles extracted cleanly!`)
+          : color.yellow(`Finished: ${passed} OK, ${warned} with warnings/errors`)
+      );
+    } finally {
+      await browserPool.close();
+      catalog.close();
+    }
+  });
+
+// ==========================================
 // Command: recon
 // ==========================================
 program
@@ -404,10 +656,12 @@ async function runInteractiveMenu() {
   const action = await p.select({
     message: 'What would you like to do?',
     options: [
-      { value: 'run', label: '🚀 Start Crawl Harvest', hint: 'Harvest articles down to cutoff date' },
-      { value: 'status', label: '📊 View Catalog Status', hint: 'Article counts, dates & database stats' },
+      { value: 'scrape', label: '📰 Scrape Full Articles', hint: 'Concurrent polite body scraper with static live UI' },
+      { value: 'run', label: '🚀 Start URL Crawl Harvest', hint: 'Harvest article URLs down to cutoff date' },
+      { value: 'status', label: '📊 View Catalog Status', hint: 'Scraped counts, active URLs & database stats' },
       { value: 'plan', label: '📋 View Crawl Targets & Plans', hint: 'Inspect configured outlets & source categories' },
       { value: 'export', label: '💾 Export URLs & Headlines', hint: 'Regenerate text and jsonl files in data/urls/' },
+      { value: 'verify-extract', label: '🔍 Verify Article Extractors', hint: 'Spot-check live article extraction per outlet' },
       { value: 'exit', label: '🚪 Exit' },
     ],
   });
@@ -417,18 +671,73 @@ async function runInteractiveMenu() {
     process.exit(0);
   }
 
-  if (action === 'status') {
-    program.commands.find((c) => c.name() === 'status')?.parse(['status'], { from: 'user' });
+  if (action === 'status' || action === 'plan' || action === 'export' || action === 'verify-extract') {
+    await program.parseAsync([action], { from: 'user' });
     return;
   }
 
-  if (action === 'plan') {
-    program.commands.find((c) => c.name() === 'plan')?.parse(['plan'], { from: 'user' });
-    return;
-  }
+  if (action === 'scrape') {
+    const allOutlets = getAllOutlets();
+    const scrapeConfig = await p.group(
+      {
+        scope: () =>
+          p.select({
+            message: 'Which outlets would you like to scrape?',
+            initialValue: 'all',
+            options: [
+              { value: 'all', label: 'All 8 outlets concurrently', hint: 'Recommended — 1 polite serial worker per domain' },
+              ...allOutlets.map((o) => ({ value: o.id, label: o.name, hint: o.id })),
+            ],
+          }),
+        concurrency: ({ results }) =>
+          results.scope === 'all'
+            ? p.select({
+                message: 'How many outlets concurrently?',
+                initialValue: 8,
+                options: [
+                  { value: 8, label: '8 outlets', hint: 'Recommended (1 polite stream per domain)' },
+                  { value: 4, label: '4 outlets', hint: 'Moderate parallel' },
+                  { value: 2, label: '2 outlets', hint: 'Light parallel' },
+                  { value: 1, label: '1 outlet', hint: 'Strictly sequential' },
+                ],
+              })
+            : Promise.resolve(1),
+        limitStr: () =>
+          p.text({
+            message: 'Max articles per outlet this session? (Leave empty for all pending)',
+            placeholder: 'all pending',
+            validate: (v) => {
+              if (!v || v.trim() === '') return undefined;
+              const n = Number(v);
+              if (!Number.isInteger(n) || n <= 0) return 'Enter a positive integer or leave blank';
+            },
+          }),
+        retryFailed: () =>
+          p.confirm({
+            message: 'Retry previously failed articles?',
+            initialValue: false,
+          }),
+      },
+      {
+        onCancel: () => {
+          p.cancel('Scrape cancelled');
+          process.exit(0);
+        },
+      }
+    );
 
-  if (action === 'export') {
-    program.commands.find((c) => c.name() === 'export')?.parse(['export'], { from: 'user' });
+    const args = ['scrape', '-j', String(scrapeConfig.concurrency)];
+    if (scrapeConfig.scope !== 'all') {
+      args.push('-o', String(scrapeConfig.scope));
+    }
+    if (scrapeConfig.limitStr && scrapeConfig.limitStr.trim() !== '') {
+      args.push('-l', scrapeConfig.limitStr.trim());
+    }
+    if (scrapeConfig.retryFailed) {
+      args.push('--retry-failed');
+    }
+
+    await program.parseAsync(args, { from: 'user' });
     return;
   }
 
@@ -470,7 +779,7 @@ async function runInteractiveMenu() {
     const args = ['run', '-c', config.cutoff, '-j', String(config.concurrency)];
     if (config.resume) args.push('-r');
 
-    program.commands.find((c) => c.name() === 'run')?.parse(args, { from: 'user' });
+    await program.parseAsync(args, { from: 'user' });
   }
 }
 

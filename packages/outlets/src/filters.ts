@@ -10,41 +10,16 @@ import type { OutletId } from '@jachaikori/schema';
 
 const KALER_KANTHO_ALLOWED = new Set([
   'online/national',
-  'online/country-news',
   'online/politics',
   'online/court',
   'online/business',
-  'online/dhaka',
-  'online/chattogram',
-  'online/corporatecorner',
-  'online/stock-market',
-  'print-edition/first-page',
-  'print-edition/last-page',
-  'print-edition/news',
-  'print-edition/priyo-desh',
-  'print-edition/industry-business',
-  'print-edition/2nd-rajdhani',
 ]);
 
 const BANGLADESH_PROTIDIN_ALLOWED = new Set([
   'national',
-  'country',
-  'country-village',
-  'city-news',
-  'city',
-  'chittagong-pratidin',
-  'chayer-desh',
-  'various-city-roundup',
   'minister-speech',
-  'current-politics',
-  'news',
   'economy',
-  'industrial-trade',
-  'corporate-corner',
-  'industry-and-commerce-daily',
-  'agriculture-nature',
-  'first-page',
-  'last-page',
+  'current-politics',
 ]);
 
 const BUSINESS_STANDARD_ALLOWED = new Set([
@@ -52,7 +27,6 @@ const BUSINESS_STANDARD_ALLOWED = new Set([
   'economy',
   'nbr',
   'markets',
-  'stocks',
   'agriculture',
   'top-news',
   'rohingya-crisis',
@@ -60,6 +34,11 @@ const BUSINESS_STANDARD_ALLOWED = new Set([
   'analysis',
   'interviews',
   'environment',
+]);
+
+const BUSINESS_STANDARD_EXCLUDED_SUBSECTIONS = new Set([
+  'economy/corporates',
+  'economy/stocks',
 ]);
 
 const JUGANTOR_ALLOWED = new Set([
@@ -183,8 +162,19 @@ export function isAllowedArticleUrl(outlet: OutletId, url: string): boolean {
       return KALER_KANTHO_ALLOWED.has(section);
     case 'bangladesh-protidin':
       return BANGLADESH_PROTIDIN_ALLOWED.has(section);
-    case 'business-standard':
-      return BUSINESS_STANDARD_ALLOWED.has(section);
+    case 'business-standard': {
+      if (!BUSINESS_STANDARD_ALLOWED.has(section)) return false;
+      try {
+        const parts = new URL(url).pathname.split('/').filter(Boolean);
+        if (parts.length >= 3) {
+          const sub = `${parts[0].toLowerCase()}/${parts[1].toLowerCase()}`;
+          if (BUSINESS_STANDARD_EXCLUDED_SUBSECTIONS.has(sub)) return false;
+        }
+      } catch {
+        return false;
+      }
+      return true;
+    }
     case 'jugantor':
       return JUGANTOR_ALLOWED.has(section);
     case 'prothom-alo':

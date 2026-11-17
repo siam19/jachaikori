@@ -6,8 +6,15 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 export class BusinessStandardCrawler implements OutletCrawler {
   readonly id = 'business-standard';
@@ -68,6 +75,41 @@ export class BusinessStandardCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from TBS HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      ld?.datePublished ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        ''
+    );
+
+    const domByline = normalizeWhitespace($('.author-name').first().text());
+    const byline = domByline || extractJsonLdAuthor(ld?.author) || null;
+
+    const body = extractParagraphs($, 'article.node-news .section-content, .section-content');
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

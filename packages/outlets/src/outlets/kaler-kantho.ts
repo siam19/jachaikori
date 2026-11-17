@@ -7,8 +7,16 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { extractUrlSection, isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  splitArticleBody,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 export class KalerKanthoCrawler implements OutletCrawler {
   readonly id = 'kaler-kantho' as const;
@@ -91,6 +99,45 @@ export class KalerKanthoCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from Kaler Kantho HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      ld?.datePublished ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        ''
+    );
+
+    const byline = extractJsonLdAuthor(ld?.author) || null;
+
+    // Prefer JSON-LD articleBody for the canonical article because Kaler Kantho renders
+    // infinite-scroll next articles inside article.news-details-content
+    const ldBody = splitArticleBody(ld?.articleBody);
+    const body = ldBody.cleanText
+      ? ldBody
+      : extractParagraphs($, 'article.news-details-content, article');
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

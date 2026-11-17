@@ -1,9 +1,9 @@
 /**
  * @file tools/crawler/src/engine/http.ts
- * Polite HTTP client with exponential backoff, rate limiting, and transparent error handling.
+ * Polite HTTP client with realistic browser headers, rate limiting, and signal-aware backoff.
  */
 
-import { DomainRateLimiter } from './limiter';
+import { abortableSleep, DomainRateLimiter } from './limiter';
 
 export interface HttpClientOptions {
   userAgent?: string;
@@ -12,6 +12,9 @@ export interface HttpClientOptions {
   timeoutMs?: number;
 }
 
+const DEFAULT_BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
 export class PoliteHttpClient {
   private userAgent: string;
   private limiter: DomainRateLimiter;
@@ -19,11 +22,9 @@ export class PoliteHttpClient {
   private timeoutMs: number;
 
   constructor(options: HttpClientOptions = {}) {
-    this.userAgent =
-      options.userAgent ??
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Jachaikori-Crawler/1.0 (+https://github.com/jachaikori/jachaikori)';
+    this.userAgent = options.userAgent ?? DEFAULT_BROWSER_UA;
     this.limiter = options.limiter ?? new DomainRateLimiter();
-    this.maxRetries = options.maxRetries ?? 3;
+    this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? 15_000;
   }
 
@@ -32,20 +33,22 @@ export class PoliteHttpClient {
   }
 
   /**
-   * Executes a polite fetch with rate limiting, timeouts, and automatic retries.
+   * Executes a polite fetch with rate limiting, timeouts, and automatic signal-aware retries.
    */
   async fetch(url: string, init: RequestInit = {}): Promise<Response> {
-    const domain = new URL(url).hostname;
+    const parsedUrl = new URL(url);
+    const domain = parsedUrl.hostname;
+    const callerSignal = init.signal ?? undefined;
     let attempt = 0;
 
     while (attempt <= this.maxRetries) {
       attempt++;
-      await this.limiter.acquire(domain);
+      await this.limiter.acquire(domain, callerSignal);
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
-      const combinedSignal = init.signal
-        ? AbortSignal.any([controller.signal, init.signal])
+      const combinedSignal = callerSignal
+        ? AbortSignal.any([controller.signal, callerSignal])
         : controller.signal;
 
       try {
@@ -54,8 +57,13 @@ export class PoliteHttpClient {
           signal: combinedSignal,
           headers: {
             'User-Agent': this.userAgent,
-            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'bn-BD,bn;q=0.9,en-US;q=0.8,en;q=0.7',
+            Referer: `${parsedUrl.origin}/`,
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Upgrade-Insecure-Requests': '1',
             ...init.headers,
           },
         });
@@ -70,9 +78,9 @@ export class PoliteHttpClient {
         // Handle 429 Too Many Requests or 5xx Server Errors
         if (response.status === 429 || (response.status >= 500 && response.status < 600)) {
           this.limiter.reportFailure(domain, response.status);
-          if (attempt <= this.maxRetries) {
-            const backoffMs = Math.min(1000 * 2 ** attempt, 10_000);
-            await new Promise((r) => setTimeout(r, backoffMs));
+          if (response.status !== 429 && attempt <= this.maxRetries) {
+            const backoffMs = Math.min(1500 * 2 ** (attempt - 1), 10_000);
+            await abortableSleep(backoffMs, callerSignal);
             continue;
           }
         }
@@ -80,12 +88,12 @@ export class PoliteHttpClient {
         return response;
       } catch (err: any) {
         clearTimeout(timeoutId);
-        if (init.signal?.aborted) {
+        if (callerSignal?.aborted) {
           throw err;
         }
         if (attempt <= this.maxRetries) {
-          const backoffMs = Math.min(1000 * 2 ** attempt, 8000);
-          await new Promise((r) => setTimeout(r, backoffMs));
+          const backoffMs = Math.min(1500 * 2 ** (attempt - 1), 8_000);
+          await abortableSleep(backoffMs, callerSignal);
           continue;
         }
         throw err;
@@ -98,7 +106,11 @@ export class PoliteHttpClient {
   async fetchText(url: string, init?: RequestInit): Promise<string> {
     const res = await this.fetch(url, init);
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} fetching ${url}`);
+      const error = new Error(`HTTP ${res.status} ${res.statusText} fetching ${url}`) as Error & {
+        status?: number;
+      };
+      error.status = res.status;
+      throw error;
     }
     return res.text();
   }
@@ -106,7 +118,11 @@ export class PoliteHttpClient {
   async fetchJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
     const res = await this.fetch(url, init);
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} fetching ${url}`);
+      const error = new Error(`HTTP ${res.status} ${res.statusText} fetching ${url}`) as Error & {
+        status?: number;
+      };
+      error.status = res.status;
+      throw error;
     }
     return res.json() as Promise<T>;
   }

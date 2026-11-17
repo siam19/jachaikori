@@ -7,8 +7,15 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { extractUrlSection, isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 export class BangladeshProtidinCrawler implements OutletCrawler {
   readonly id = 'bangladesh-protidin' as const;
@@ -91,6 +98,44 @@ export class BangladeshProtidinCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from Bangladesh Pratidin HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const rawTitle =
+      $('h1.n_head, h1.card-title, h1').first().text() ||
+      ld?.headline ||
+      $('meta[property="og:title"]').attr('content') ||
+      '';
+    const title = normalizeWhitespace(rawTitle.replace(/\s*\|\s*\|\s*বাংলাদেশ প্রতিদিন\s*$/, ''));
+
+    const publishedAtRaw = normalizeWhitespace(
+      $('meta[property="article:published_time"]').attr('content') ||
+        ld?.datePublished ||
+        ''
+    );
+
+    const domByline = normalizeWhitespace(
+      $('i.bi-pen').first().next('span').text() ||
+        $('.author, [rel="author"]').first().text()
+    );
+    const byline = domByline || extractJsonLdAuthor(ld?.author) || null;
+
+    const body = extractParagraphs($, '.mt-3 article, main article, article');
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

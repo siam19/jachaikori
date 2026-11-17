@@ -33,11 +33,17 @@ describe('BusinessStandardCrawler', () => {
     expect(items[0].publishedAtRaw).toContain('2026-10-30');
   });
 
-  it('filters out off-topic sections such as videos, world, sports, and govt-ad', () => {
+  it('filters out off-topic sections and corporate PR / stock tickers', () => {
     const mockHtml = `
       <div class="archive-contents">
         <div class="card card-list">
           <h4 class="card-title"><a href="/economy/banking/bb-raises-policy-rate-101">BB raises policy rate</a></h4>
+        </div>
+        <div class="card card-list">
+          <h4 class="card-title"><a href="/economy/corporates/brand-launches-campaign-105">Brand launches campaign</a></h4>
+        </div>
+        <div class="card card-list">
+          <h4 class="card-title"><a href="/economy/stocks/dse-index-edges-up-106">DSE index edges up</a></h4>
         </div>
         <div class="card card-list">
           <h4 class="card-title"><a href="/world/global-summit-102">Global summit update</a></h4>

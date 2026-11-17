@@ -7,8 +7,15 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { ITTEFAQ_ALLOWED_CATEGORY_SLUGS, isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 interface IttefaqAjaxResponse {
   total?: number;
@@ -109,6 +116,42 @@ export class IttefaqCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from Daily Ittefaq HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      ld?.datePublished ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        $('.published_time, .time').first().text() ||
+        ''
+    );
+
+    const domByline = normalizeWhitespace($('.author_n_share .author, .author').first().text());
+    const byline = domByline || extractJsonLdAuthor(ld?.author) || null;
+
+    const body = extractParagraphs($, '.jw_article_body, article.jw_detail_content_holder');
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**

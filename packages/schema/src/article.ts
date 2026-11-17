@@ -11,6 +11,7 @@ import { OutletIdSchema } from './outlet';
  */
 export const ArticleStatusSchema = z.enum([
   'discovered',  // Harvested by crawler list scraper
+  'skipped',     // Filtered out / deprioritized from article body scraping
   'fetched',     // Raw HTML downloaded and stored
   'extracted',   // Clean text, title, date, byline parsed
   'enriched',    // Claims and entities extracted, chunks prepared
@@ -33,8 +34,10 @@ export const ArticleSchema = z.object({
   fetchedAt: z.string().nullable().describe('ISO timestamp of download'),
   status: ArticleStatusSchema.default('discovered'),
   rawHtmlPointer: z.string().nullable().describe('R2 or local path to raw HTML'),
+  lead: z.string().nullable().optional().describe('Lead / opening summary paragraph'),
   cleanText: z.string().nullable().describe('Extracted main body article text'),
   byline: z.string().nullable().describe('Author or reporter byline'),
+  lastError: z.string().nullable().optional().describe('Last scrape or extraction error message'),
   pipelineVersion: z.string().default('v1'),
   createdAt: z.string(),
   updatedAt: z.string(),

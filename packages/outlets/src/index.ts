@@ -5,6 +5,7 @@
 
 export * from './types';
 export * from './filters';
+export * from './extract-utils';
 export * from './registry';
 export * from './outlets/business-standard';
 export * from './outlets/ittefaq';

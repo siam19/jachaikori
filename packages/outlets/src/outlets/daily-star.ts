@@ -7,8 +7,15 @@
 
 import * as cheerio from 'cheerio';
 import type { ListItem, SourceDef } from '@jachaikori/schema';
-import type { CrawlContext, OutletCrawler } from '../types';
+import type { CrawlContext, ExtractedArticle, OutletCrawler } from '../types';
 import { isAllowedArticleUrl } from '../filters';
+import {
+  extractJsonLdArticles,
+  extractJsonLdAuthor,
+  extractParagraphs,
+  normalizeWhitespace,
+  tryNormalizeIsoDate,
+} from '../extract-utils';
 
 export class DailyStarCrawler implements OutletCrawler {
   readonly id = 'daily-star' as const;
@@ -129,6 +136,43 @@ export class DailyStarCrawler implements OutletCrawler {
     });
 
     return items;
+  }
+
+  /**
+   * Pure extractor: parses full article title, published time, byline, and clean body from The Daily Star HTML.
+   */
+  extractArticle(html: string, _url: string): ExtractedArticle {
+    const $ = cheerio.load(html);
+    const ld = extractJsonLdArticles($)[0];
+
+    const title = normalizeWhitespace(
+      $('h1').first().text() ||
+        ld?.headline ||
+        $('meta[property="og:title"]').attr('content') ||
+        ''
+    );
+
+    const publishedAtRaw = normalizeWhitespace(
+      $('time.rsi-ago[datetime], time[datetime]').first().attr('datetime') ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        ld?.datePublished ||
+        ''
+    );
+
+    const rawDomByline = normalizeWhitespace($('.block-author-info-block').first().text());
+    const domByline = rawDomByline.replace(/^(.+?)\s+\1$/, '$1');
+    const byline = extractJsonLdAuthor(ld?.author) || domByline || null;
+
+    const body = extractParagraphs($, '.block-field-blocknodenewsbody, .field--name-body');
+
+    return {
+      title,
+      publishedAtRaw,
+      publishedAtIso: tryNormalizeIsoDate(publishedAtRaw),
+      byline,
+      lead: body.lead,
+      cleanText: body.cleanText,
+    };
   }
 
   /**
