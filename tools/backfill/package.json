@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
+    "@jachaikori/entities": "workspace:*",
     "@jachaikori/retrieval": "workspace:*",
     "@jachaikori/schema": "workspace:*",
     "commander": "^12.1.0",

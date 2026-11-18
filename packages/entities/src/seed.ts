@@ -37,8 +37,10 @@ const RAW_SEED: SeedEntityDefinition[] = [
     },
     aliases: [
       { raw: 'তারেক রহমান' },
+      { raw: 'তারেক জিয়া' },
       { raw: 'Tarique Rahman' },
       { raw: 'Tareque Rahman' },
+      { raw: 'Tarique Zia' },
       { raw: 'প্রধানমন্ত্রী তারেক রহমান', validFrom: '2026-02-17' },
       { raw: 'প্রধানমন্ত্রী', validFrom: '2026-02-17', validTo: null },
       { raw: 'Prime Minister', validFrom: '2026-02-17', validTo: null },

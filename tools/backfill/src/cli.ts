@@ -10,7 +10,8 @@ import * as p from '@clack/prompts';
 import color from 'picocolors';
 import { Database } from 'bun:sqlite';
 import { mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
 import {
   buildFtsMatchQuery,
   buildTemporalSimilarityEdgesAsync,
@@ -20,7 +21,20 @@ import {
   normalizeBanglaForFts,
   type ArticleVectorRecord,
 } from '@jachaikori/retrieval';
-import type { OutletId } from '@jachaikori/schema';
+import {
+  buildSeedRegistry,
+  discoverRecurringHeadlineEntities,
+  EntityHypergraphResolver,
+  normalizeText,
+} from '@jachaikori/entities';
+import {
+  LlmArticleExtractionSchema,
+  type ArticleEntityMention,
+  type Entity,
+  type EntityAlias,
+  type EntityRelation,
+  type OutletId,
+} from '@jachaikori/schema';
 import { IndexDatabase } from './db';
 
 const REPO_ROOT = resolve(import.meta.dir, '../../..');
@@ -490,6 +504,327 @@ program
     idx.close();
     s.stop(color.green(`Exported ${rows.length.toLocaleString()} vectors across ${fileIdx} NDJSON files in ${outDir}/`));
     p.outro(color.dim('Upload with: wrangler vectorize insert jachaikori-chunks --file=<batch.ndjson>'));
+  });
+
+// ==========================================
+// Command: resolve-entities
+// ==========================================
+program
+  .command('resolve-entities')
+  .description('Resolves canonical entities, temporal roles, and sentence-level hypergraph relations across all articles')
+  .option('--index <path>', 'Path to index.sqlite', DEFAULT_INDEX)
+  .option('--min-discovered <number>', 'Minimum headline speaker mentions to auto-promote emergent entities', (v) => parseInt(v, 10), 8)
+  .option('--seed-only', 'Only use curated entity registry without dynamic title-speaker discovery', false)
+  .action(async (opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Entity Resolution & Hypergraph Builder ')));
+    const totalStart = Date.now();
+
+    const loadSpinner = p.spinner();
+    loadSpinner.start('Loading articles and compiling entity registry...');
+    const idx = new IndexDatabase(opts.index);
+    const articles = idx.getAllArticlesForEntities();
+
+    if (articles.length === 0) {
+      loadSpinner.stop(color.yellow('No articles in index.sqlite. Run `bun run backfill chunk` first.'));
+      idx.close();
+      return;
+    }
+
+    const seed = buildSeedRegistry();
+    const discovered = opts.seedOnly
+      ? { entities: [], aliases: [] }
+      : discoverRecurringHeadlineEntities(
+          articles.map((a) => a.title),
+          { minMentions: opts.minDiscovered, existingAliases: seed.aliases }
+        );
+
+    const allEntities = [...seed.entities, ...discovered.entities];
+    const allAliases = [...seed.aliases, ...discovered.aliases];
+    idx.replaceEntityRegistryAndClearHypergraph(allEntities, allAliases);
+    const resolver = new EntityHypergraphResolver(allEntities, allAliases);
+
+    loadSpinner.stop(
+      color.green(
+        `Loaded ${articles.length.toLocaleString()} articles · ${allEntities.length} entities (${seed.entities.length} curated + ${discovered.entities.length} discovered)`
+      )
+    );
+
+    const bar = p.progress({ style: 'block', max: articles.length, size: 28 });
+    bar.start(`Resolving entities & hypergraph edges (0/${articles.length.toLocaleString()})`);
+
+    let mentionBatch: ArticleEntityMention[] = [];
+    let relationBatch: EntityRelation[] = [];
+    let totalMentions = 0;
+    let totalRelations = 0;
+    let articlesWithEntities = 0;
+    let lastUpdated = 0;
+    let lastYieldAt = Date.now();
+    const resolveStart = Date.now();
+
+    for (let i = 0; i < articles.length; i++) {
+      const art = articles[i]!;
+      const res = resolver.resolveArticle(art);
+
+      if (res.mentions.length > 0) {
+        articlesWithEntities++;
+        totalMentions += res.mentions.length;
+        totalRelations += res.relations.length;
+        for (const m of res.mentions) mentionBatch.push(m);
+        for (const r of res.relations) relationBatch.push(r);
+      }
+
+      if (mentionBatch.length >= 4000 || relationBatch.length >= 4000 || i === articles.length - 1) {
+        if (mentionBatch.length > 0 || relationBatch.length > 0) {
+          idx.saveEntityHypergraphBatch(mentionBatch, relationBatch);
+          mentionBatch = [];
+          relationBatch = [];
+        }
+      }
+
+      const processed = i + 1;
+      const isLast = processed === articles.length;
+      if (isLast || (processed % 250 === 0 && Date.now() - lastYieldAt >= 80)) {
+        const delta = processed - lastUpdated;
+        lastUpdated = processed;
+        const elapsedSec = Math.max((Date.now() - resolveStart) / 1000, 0.001);
+        const rate = processed / elapsedSec;
+        const eta = Math.max(0, (articles.length - processed) / Math.max(rate, 1));
+        const pct = ((processed / articles.length) * 100).toFixed(1);
+        bar.advance(
+          delta,
+          `${pct}% · ${processed.toLocaleString()}/${articles.length.toLocaleString()} · ${Math.round(rate).toLocaleString()} art/s · ETA ${Math.ceil(eta)}s · ${totalMentions.toLocaleString()} mentions · ${totalRelations.toLocaleString()} relations`
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        lastYieldAt = Date.now();
+      }
+    }
+
+    bar.stop(
+      color.green(
+        `Resolved ${totalMentions.toLocaleString()} entity mentions & ${totalRelations.toLocaleString()} relations in ${((Date.now() - resolveStart) / 1000).toFixed(1)}s`
+      )
+    );
+    idx.close();
+
+    p.note(
+      [
+        `${color.dim('Canonical entities:')}       ${color.white(allEntities.length.toLocaleString())} (${discovered.entities.length} auto-discovered)`,
+        `${color.dim('Articles linked:')}          ${color.cyan(articlesWithEntities.toLocaleString())} / ${articles.length.toLocaleString()}`,
+        `${color.dim('Entity mentions:')}          ${color.white(totalMentions.toLocaleString())}`,
+        `${color.dim('Hypergraph relations:')}     ${color.green(totalRelations.toLocaleString())}`,
+        `${color.dim('Total elapsed:')}            ${color.white(`${((Date.now() - totalStart) / 1000).toFixed(1)}s`)}`,
+      ].join('\n'),
+      'Entity Hypergraph Summary'
+    );
+    p.outro(color.dim('Explore in the Web UI under the "Entity Hypergraph" mode!'));
+  });
+
+// ==========================================
+// Command: prepare-llm-extract
+// ==========================================
+program
+  .command('prepare-llm-extract')
+  .description('Prepares Vertex AI Batch requests.jsonl for LLM entity & claim extraction, prioritizing multi-outlet clusters')
+  .option('--index <path>', 'Path to index.sqlite', DEFAULT_INDEX)
+  .option('--out <path>', 'Output requests.jsonl path', join(DEFAULT_INDEX_DIR, 'requests.jsonl'))
+  .option('--limit <number>', 'Optional max number of articles to export', (v) => parseInt(v, 10))
+  .action(async (opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Prepare LLM Extraction Batch ')));
+    const idx = new IndexDatabase(opts.index);
+    const articles = idx.getArticlesForLlmExtract(opts.limit);
+
+    if (articles.length === 0) {
+      p.log.warn('No articles found in index.sqlite.');
+      idx.close();
+      return;
+    }
+
+    mkdirSync(dirname(opts.out), { recursive: true });
+    const stream = createWriteStream(opts.out, { encoding: 'utf8' });
+
+    let totalInputChars = 0;
+    let multiOutletCount = 0;
+
+    for (const art of articles) {
+      if (art.outletCount >= 2) multiOutletCount++;
+      const candidates = idx.getKnownCandidatesForArticle(art.id, art.clusterId);
+      const rawBody = (art.cleanText || art.lead || '').trim();
+      const truncatedBody = rawBody.length > 1800 ? `${rawBody.slice(0, 1800)}...` : rawBody;
+
+      const prompt = [
+        'Extract canonical entities (with bilingual canonicalBn/canonicalEn) and factual claims from this news article.',
+        'Match against KNOWN_CANDIDATES when possible (set entityId to the matching id, otherwise null).',
+        `KNOWN_CANDIDATES: ${JSON.stringify(candidates)}`,
+        `ARTICLE_ID: ${art.id}`,
+        `PUBLISHED_AT: ${art.publishedAt ?? 'unknown'}`,
+        `TITLE: ${art.title}`,
+        `BODY: ${truncatedBody}`,
+      ].join('\n');
+
+      totalInputChars += prompt.length;
+
+      const batchLine = {
+        custom_id: art.id,
+        request: {
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+          },
+        },
+      };
+      stream.write(`${JSON.stringify(batchLine)}\n`);
+    }
+
+    await new Promise<void>((resolveStream) => stream.end(resolveStream));
+    idx.close();
+
+    const estInputTokens = Math.ceil(totalInputChars / 4);
+    const estOutputTokens = articles.length * 350;
+    const estCostUsd = (estInputTokens / 1_000_000) * 0.075 + (estOutputTokens / 1_000_000) * 0.30;
+
+    p.note(
+      [
+        `${color.dim('Articles exported:')}        ${color.white(articles.length.toLocaleString())} (${multiOutletCount.toLocaleString()} in outlet_count >= 2 clusters)`,
+        `${color.dim('Output file:')}              ${color.cyan(opts.out)}`,
+        `${color.dim('Est. input tokens:')}        ${color.white(estInputTokens.toLocaleString())}`,
+        `${color.dim('Est. output tokens:')}       ${color.white(estOutputTokens.toLocaleString())}`,
+        `${color.dim('Est. Batch cost (USD):')}    ${color.green(`$${estCostUsd.toFixed(4)}`)}`,
+      ].join('\n'),
+      'Vertex Batch Export Summary'
+    );
+    p.outro(color.dim('Run tools/backfill/gcp/run-gcp-extract.sh --pilot 200 to execute.'));
+  });
+
+// ==========================================
+// Command: ingest-llm-extract
+// ==========================================
+program
+  .command('ingest-llm-extract')
+  .description('Zod-validates llm-extractions.jsonl, consolidates bilingual entities, and upserts entities, aliases, mentions, and claims')
+  .option('--index <path>', 'Path to index.sqlite', DEFAULT_INDEX)
+  .option('--input <path>', 'Input llm-extractions.jsonl path', join(DEFAULT_INDEX_DIR, 'llm-extractions.jsonl'))
+  .action(async (opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Ingest LLM Extractions ')));
+    const raw = readFileSync(opts.input, 'utf8');
+    const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
+
+    const idx = new IndexDatabase(opts.index);
+    const promotedEntities = new Map<string, Entity>();
+    const promotedAliases = new Map<string, EntityAlias>();
+    const mentions: ArticleEntityMention[] = [];
+    const claims: Array<{
+      id: string;
+      articleId: string;
+      claimText: string;
+      claimType: string;
+      subjectEntityId: string | null;
+      objectEntityId: string | null;
+      evidenceSnippet: string | null;
+      confidence: number;
+    }> = [];
+
+    let validRows = 0;
+    let invalidRows = 0;
+
+    for (const line of lines) {
+      let parsedJson: any;
+      try {
+        parsedJson = JSON.parse(line);
+      } catch {
+        invalidRows++;
+        continue;
+      }
+
+      const articleId = parsedJson.articleId ?? parsedJson.custom_id;
+      const payload = parsedJson.extraction ?? parsedJson;
+      const validated = LlmArticleExtractionSchema.safeParse({ ...payload, articleId });
+      if (!validated.success || !articleId) {
+        invalidRows++;
+        continue;
+      }
+
+      validRows++;
+      const data = validated.data;
+
+      for (const ent of data.entities) {
+        let resolvedId = ent.entityId;
+        if (!resolvedId) {
+          const keySource = `${ent.entityType}|${(ent.canonicalEn || ent.canonicalBn || ent.surfaceForm).trim().toLowerCase()}`;
+          const hash = createHash('sha1').update(keySource).digest('hex').slice(0, 12);
+          resolvedId = `ent_llm_${hash}`;
+
+          if (!promotedEntities.has(resolvedId)) {
+            promotedEntities.set(resolvedId, {
+              id: resolvedId,
+              canonicalBn: ent.canonicalBn ?? null,
+              canonicalEn: ent.canonicalEn ?? null,
+              entityType: ent.entityType,
+              metadataJson: JSON.stringify({ source: 'llm-extract' }),
+            });
+          }
+
+          for (const rawAlias of [ent.canonicalBn, ent.canonicalEn, ent.surfaceForm]) {
+            if (!rawAlias) continue;
+            const norm = normalizeText(rawAlias).toLowerCase();
+            if (!norm) continue;
+            const aliasKey = `${norm}|${resolvedId}`;
+            if (!promotedAliases.has(aliasKey)) {
+              promotedAliases.set(aliasKey, {
+                aliasNorm: norm,
+                aliasRaw: rawAlias,
+                entityId: resolvedId,
+                validFrom: null,
+                validTo: null,
+              });
+            }
+          }
+        }
+
+        mentions.push({
+          articleId,
+          entityId: resolvedId,
+          chunkId: null,
+          surfaceForm: ent.surfaceForm,
+          role: ent.role,
+          confidence: ent.confidence,
+        });
+      }
+
+      for (let ci = 0; ci < data.claims.length; ci++) {
+        const c = data.claims[ci]!;
+        const claimHash = createHash('sha1').update(`${articleId}|${ci}|${c.claimText}`).digest('hex').slice(0, 14);
+        claims.push({
+          id: `clm_${claimHash}`,
+          articleId,
+          claimText: c.claimText,
+          claimType: c.claimType,
+          subjectEntityId: c.subjectEntityId ?? null,
+          objectEntityId: c.objectEntityId ?? null,
+          evidenceSnippet: c.evidenceSnippet ?? null,
+          confidence: c.confidence,
+        });
+      }
+    }
+
+    idx.upsertLlmExtractionBatch({
+      entities: Array.from(promotedEntities.values()),
+      aliases: Array.from(promotedAliases.values()),
+      mentions,
+      claims,
+    });
+    idx.close();
+
+    p.note(
+      [
+        `${color.dim('Valid articles:')}           ${color.green(validRows.toLocaleString())} (${invalidRows} skipped)`,
+        `${color.dim('Promoted entities:')}        ${color.white(promotedEntities.size.toLocaleString())}`,
+        `${color.dim('Entity mentions:')}          ${color.white(mentions.length.toLocaleString())}`,
+        `${color.dim('Claims upserted:')}          ${color.cyan(claims.length.toLocaleString())}`,
+      ].join('\n'),
+      'LLM Extraction Ingest Summary'
+    );
+    p.outro(color.dim('Done!'));
   });
 
 await program.parseAsync(process.argv);

@@ -48,6 +48,74 @@ interface MatchedSpan {
   role: EntityRole;
 }
 
+const ROLE_GUARD_PREDECESSORS = new Set([
+  // Former / ousted / acting / deputy modifiers
+  'সাবেক',
+  'প্রাক্তন',
+  'ক্ষমতাচ্যুত',
+  'ভারপ্রাপ্ত',
+  'উপ',
+  'former',
+  'ex',
+  'ex-',
+  'ousted',
+  'deputy',
+  'acting',
+  'interim',
+  'late',
+  // Foreign country / nationality qualifiers
+  'ভারতের',
+  'ভারতীয়',
+  'পাকিস্তানের',
+  'পাকিস্তানি',
+  'ইসরায়েলের',
+  'ইসরায়েলি',
+  'ব্রিটিশ',
+  'যুক্তরাজ্যের',
+  'মার্কিন',
+  'আমেরিকার',
+  'চীনের',
+  'চীনা',
+  'রাশিয়ার',
+  'রুশ',
+  'ফ্রান্সের',
+  'ফরাসি',
+  'জার্মানির',
+  'জার্মান',
+  'জাপানের',
+  'জাপানি',
+  'কানাডার',
+  'অস্ট্রেলিয়ার',
+  'মালয়েশিয়ার',
+  'তুরস্কের',
+  'নেপালের',
+  'শ্রীলঙ্কার',
+  'ভুটানের',
+  'indian',
+  'pakistani',
+  'israeli',
+  'british',
+  'uk',
+  'us',
+  'american',
+  'chinese',
+  'russian',
+  'french',
+  'german',
+  'japanese',
+  'canadian',
+  'australian',
+  'malaysian',
+  'turkish',
+  'nepali',
+  'bhutanese',
+  "india's",
+  "pakistan's",
+  "israel's",
+  "uk's",
+  "britain's",
+]);
+
 const BN_SPEECH_VERB_RE = /(?:বলেন|বলেছেন|জানান|জানিয়েছেন|মন্তব্য করেন|দাবি করেন|উল্লেখ করেন|হুঁশিয়ারি)/;
 const EN_SPEECH_VERB_RE = /\b(?:said|says|told|tells|stated|noted|warned|according to)\b/i;
 
@@ -253,6 +321,18 @@ export class EntityHypergraphResolver {
     if (cand.tokens.length === 1 && cand.tokens[0] === 'pm' && startIdx > 0) {
       const prev = tokens[startIdx - 1]!.norm;
       if (/^[0-9:.-]+$/.test(prev)) return false;
+    }
+
+    // WP1 role guard: block bare PM / প্রধানমন্ত্রী / Prime Minister when preceded by
+    // former/ousted/acting modifiers or foreign country/nationality qualifiers
+    const isBarePmRole =
+      (cand.tokens.length === 1 && (cand.tokens[0] === 'pm' || cand.tokens[0] === 'প্রধানমন্ত্রী')) ||
+      (cand.tokens.length === 2 && cand.tokens[0] === 'prime' && cand.tokens[1] === 'minister');
+    if (isBarePmRole && startIdx > 0) {
+      const prev = tokens[startIdx - 1]!.norm;
+      if (ROLE_GUARD_PREDECESSORS.has(prev)) {
+        return false;
+      }
     }
 
     return true;

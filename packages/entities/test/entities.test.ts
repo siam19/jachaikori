@@ -98,4 +98,54 @@ describe('Entity Normalization & Temporal Role Resolution', () => {
     expect(discovered.entities.length).toBe(1);
     expect(discovered.entities[0]!.canonicalBn).toBe('আনিসুজ্জামান চৌধুরী');
   });
+
+  it('blocks bare PM / প্রধানমন্ত্রী when preceded by former/ousted/acting or foreign qualifiers', () => {
+    const { entities, aliases } = buildSeedRegistry();
+    const resolver = new EntityHypergraphResolver(entities, aliases);
+
+    const blockedCases = [
+      'সাবেক প্রধানমন্ত্রী ঢাকায় এসেছেন',
+      'ভারতের প্রধানমন্ত্রী আজ বক্তব্য দেবেন',
+      'ইসরায়েলের প্রধানমন্ত্রী নতুন ঘোষণা দিয়েছেন',
+      'Former PM criticizes new policy',
+      'Indian Prime Minister arrives for summit',
+      'Ousted PM faces new charges',
+    ];
+
+    for (const [idx, title] of blockedCases.entries()) {
+      const out = resolver.resolveArticle({
+        id: `art-guard-${idx}`,
+        title,
+        publishedAt: '2026-11-17T10:00:00Z',
+      });
+      expect(out.mentions.some((m) => m.entityId === 'ent_tareque_rahman')).toBe(false);
+    }
+
+    // Bare PM without guard should still resolve to Tarique Rahman in 2026
+    const allowed = resolver.resolveArticle({
+      id: 'art-guard-ok',
+      title: 'প্রধানমন্ত্রী আজ নতুন প্রকল্প উদ্বোধন করবেন',
+      publishedAt: '2026-11-17T10:00:00Z',
+    });
+    expect(allowed.mentions.some((m) => m.entityId === 'ent_tareque_rahman')).toBe(true);
+  });
+
+  it('resolves Tarique Zia / তারেক জিয়া aliases to ent_tareque_rahman', () => {
+    const { entities, aliases } = buildSeedRegistry();
+    const resolver = new EntityHypergraphResolver(entities, aliases);
+
+    const bnOut = resolver.resolveArticle({
+      id: 'art-tz-bn',
+      title: 'তারেক জিয়া আজ সমাবেশে বক্তব্য রাখবেন',
+      publishedAt: '2026-11-17T10:00:00Z',
+    });
+    expect(bnOut.mentions.some((m) => m.entityId === 'ent_tareque_rahman')).toBe(true);
+
+    const enOut = resolver.resolveArticle({
+      id: 'art-tz-en',
+      title: 'Tarique Zia addresses rally in Dhaka',
+      publishedAt: '2026-11-17T10:00:00Z',
+    });
+    expect(enOut.mentions.some((m) => m.entityId === 'ent_tareque_rahman')).toBe(true);
+  });
 });

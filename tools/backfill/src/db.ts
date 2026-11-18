@@ -8,7 +8,14 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { BANGLA_FTS_TOKENIZE_CLAUSE, type ComputedCluster, type SimilarityEdge } from '@jachaikori/retrieval';
-import type { ArticleChunk, OutletId } from '@jachaikori/schema';
+import type {
+  ArticleChunk,
+  ArticleEntityMention,
+  Entity,
+  EntityAlias,
+  EntityRelation,
+  OutletId,
+} from '@jachaikori/schema';
 
 export class IndexDatabase {
   private db: Database;
@@ -138,12 +145,54 @@ export class IndexDatabase {
         entity_id TEXT NOT NULL,
         chunk_id TEXT,
         surface_form TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'mentioned',
         confidence REAL NOT NULL DEFAULT 1.0,
         PRIMARY KEY (article_id, entity_id, surface_form),
         FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE,
         FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE CASCADE
       );
+      CREATE INDEX IF NOT EXISTS idx_article_entity_aid ON article_entity(article_id);
+      CREATE INDEX IF NOT EXISTS idx_article_entity_eid ON article_entity(entity_id);
+      CREATE INDEX IF NOT EXISTS idx_alias_norm ON entity_alias(alias_norm);
+
+      CREATE TABLE IF NOT EXISTS entity_relation (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL,
+        source_entity_id TEXT NOT NULL,
+        target_entity_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        evidence_snippet TEXT NOT NULL,
+        published_at TEXT,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE,
+        FOREIGN KEY (source_entity_id) REFERENCES entity(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_entity_id) REFERENCES entity(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_rel_article ON entity_relation(article_id);
+      CREATE INDEX IF NOT EXISTS idx_rel_source ON entity_relation(source_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relation(target_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_rel_type ON entity_relation(relation_type);
+
+      CREATE TABLE IF NOT EXISTS claim (
+        id TEXT PRIMARY KEY,
+        article_id TEXT NOT NULL,
+        claim_text TEXT NOT NULL,
+        claim_type TEXT NOT NULL DEFAULT 'factual',
+        subject_entity_id TEXT,
+        object_entity_id TEXT,
+        evidence_snippet TEXT,
+        confidence REAL NOT NULL DEFAULT 0.85,
+        FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_claim_article ON claim(article_id);
+      CREATE INDEX IF NOT EXISTS idx_claim_subject ON claim(subject_entity_id);
     `);
+
+    // Migrate existing article_entity tables created before Sprint 4
+    const cols = this.db.prepare('PRAGMA table_info(article_entity)').all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === 'role')) {
+      this.db.run("ALTER TABLE article_entity ADD COLUMN role TEXT NOT NULL DEFAULT 'mentioned'");
+    }
   }
 
   getExistingArticleIds(): Set<string> {
@@ -331,11 +380,260 @@ export class IndexDatabase {
     tx();
   }
 
+  getAllArticlesForEntities(): Array<{
+    id: string;
+    outlet: OutletId;
+    title: string;
+    lead: string | null;
+    cleanText: string | null;
+    publishedAt: string | null;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT id, outlet, title, lead, clean_text as cleanText, published_at as publishedAt
+         FROM article
+         ORDER BY published_at DESC`
+      )
+      .all() as any[];
+  }
+
+  replaceEntityRegistryAndClearHypergraph(entities: Entity[], aliases: EntityAlias[]): void {
+    const tx = this.db.transaction(() => {
+      this.db.run('DELETE FROM entity_relation');
+      this.db.run('DELETE FROM article_entity');
+      this.db.run('DELETE FROM entity_alias');
+      this.db.run('DELETE FROM entity');
+
+      const insertEntity = this.db.prepare(
+        `INSERT INTO entity (id, canonical_bn, canonical_en, entity_type, metadata_json)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const e of entities) {
+        insertEntity.run(
+          e.id,
+          e.canonicalBn ?? null,
+          e.canonicalEn ?? null,
+          e.entityType,
+          e.metadataJson ?? null
+        );
+      }
+
+      const insertAlias = this.db.prepare(
+        `INSERT OR REPLACE INTO entity_alias (alias_norm, alias_raw, entity_id, valid_from, valid_to)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const a of aliases) {
+        insertAlias.run(
+          a.aliasNorm,
+          a.aliasRaw,
+          a.entityId,
+          a.validFrom ?? null,
+          a.validTo ?? null
+        );
+      }
+    });
+    tx();
+  }
+
+  saveEntityHypergraphBatch(
+    mentions: ArticleEntityMention[],
+    relations: EntityRelation[]
+  ): void {
+    const tx = this.db.transaction(() => {
+      const insertMention = this.db.prepare(
+        `INSERT OR REPLACE INTO article_entity (article_id, entity_id, chunk_id, surface_form, role, confidence)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const m of mentions) {
+        insertMention.run(
+          m.articleId,
+          m.entityId,
+          m.chunkId ?? null,
+          m.surfaceForm,
+          m.role,
+          m.confidence
+        );
+      }
+
+      const insertRelation = this.db.prepare(
+        `INSERT OR REPLACE INTO entity_relation (id, article_id, source_entity_id, target_entity_id, relation_type, evidence_snippet, published_at, confidence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const r of relations) {
+        insertRelation.run(
+          r.id,
+          r.articleId,
+          r.sourceEntityId,
+          r.targetEntityId,
+          r.relationType,
+          r.evidenceSnippet,
+          r.publishedAt ?? null,
+          r.confidence
+        );
+      }
+    });
+    tx();
+  }
+
   getRawDb(): Database {
     return this.db;
   }
 
-  getCounts(): { articles: number; chunks: number; chunkVectors: number; articleVectors: number; clusters: number; edges: number } {
+  getArticlesForLlmExtract(limit?: number): Array<{
+    id: string;
+    outlet: string;
+    title: string;
+    lead: string | null;
+    cleanText: string | null;
+    publishedAt: string | null;
+    clusterId: string | null;
+    outletCount: number;
+  }> {
+    const sql = `
+      SELECT
+        a.id,
+        a.outlet,
+        a.title,
+        a.lead,
+        a.clean_text as cleanText,
+        a.published_at as publishedAt,
+        ac.cluster_id as clusterId,
+        COALESCE(ec.outlet_count, 1) as outletCount
+      FROM article a
+      LEFT JOIN article_cluster ac ON ac.article_id = a.id
+      LEFT JOIN event_cluster ec ON ec.id = ac.cluster_id
+      ORDER BY
+        CASE WHEN COALESCE(ec.outlet_count, 1) >= 2 THEN 0 ELSE 1 END ASC,
+        COALESCE(ec.outlet_count, 1) DESC,
+        a.published_at DESC
+      ${limit && limit > 0 ? 'LIMIT ?' : ''}
+    `;
+    return (limit && limit > 0
+      ? this.db.prepare(sql).all(limit)
+      : this.db.prepare(sql).all()) as any;
+  }
+
+  getKnownCandidatesForArticle(
+    articleId: string,
+    clusterId: string | null
+  ): Array<{
+    id: string;
+    canonicalBn: string | null;
+    canonicalEn: string | null;
+    entityType: string;
+  }> {
+    if (clusterId) {
+      return this.db
+        .prepare(
+          `SELECT DISTINCT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn, e.entity_type as entityType
+           FROM entity e
+           JOIN article_entity ae ON ae.entity_id = e.id
+           LEFT JOIN article_cluster ac ON ac.article_id = ae.article_id
+           WHERE ae.article_id = ? OR ac.cluster_id = ?
+           LIMIT 30`
+        )
+        .all(articleId, clusterId) as any;
+    }
+    return this.db
+      .prepare(
+        `SELECT DISTINCT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn, e.entity_type as entityType
+         FROM entity e
+         JOIN article_entity ae ON ae.entity_id = e.id
+         WHERE ae.article_id = ?
+         LIMIT 30`
+      )
+      .all(articleId) as any;
+  }
+
+  upsertLlmExtractionBatch(params: {
+    entities: Entity[];
+    aliases: EntityAlias[];
+    mentions: ArticleEntityMention[];
+    claims: Array<{
+      id: string;
+      articleId: string;
+      claimText: string;
+      claimType: string;
+      subjectEntityId: string | null;
+      objectEntityId: string | null;
+      evidenceSnippet: string | null;
+      confidence: number;
+    }>;
+  }): void {
+    const tx = this.db.transaction(() => {
+      const insertEntity = this.db.prepare(
+        `INSERT OR IGNORE INTO entity (id, canonical_bn, canonical_en, entity_type, metadata_json)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const e of params.entities) {
+        insertEntity.run(
+          e.id,
+          e.canonicalBn ?? null,
+          e.canonicalEn ?? null,
+          e.entityType,
+          e.metadataJson ?? null
+        );
+      }
+
+      const insertAlias = this.db.prepare(
+        `INSERT OR IGNORE INTO entity_alias (alias_norm, alias_raw, entity_id, valid_from, valid_to)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      for (const a of params.aliases) {
+        insertAlias.run(
+          a.aliasNorm,
+          a.aliasRaw,
+          a.entityId,
+          a.validFrom ?? null,
+          a.validTo ?? null
+        );
+      }
+
+      const insertMention = this.db.prepare(
+        `INSERT OR REPLACE INTO article_entity (article_id, entity_id, chunk_id, surface_form, role, confidence)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const m of params.mentions) {
+        insertMention.run(
+          m.articleId,
+          m.entityId,
+          m.chunkId ?? null,
+          m.surfaceForm,
+          m.role,
+          m.confidence
+        );
+      }
+
+      const insertClaim = this.db.prepare(
+        `INSERT OR REPLACE INTO claim (id, article_id, claim_text, claim_type, subject_entity_id, object_entity_id, evidence_snippet, confidence)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const c of params.claims) {
+        insertClaim.run(
+          c.id,
+          c.articleId,
+          c.claimText,
+          c.claimType,
+          c.subjectEntityId,
+          c.objectEntityId,
+          c.evidenceSnippet,
+          c.confidence
+        );
+      }
+    });
+    tx();
+  }
+
+  getCounts(): {
+    articles: number;
+    chunks: number;
+    chunkVectors: number;
+    articleVectors: number;
+    clusters: number;
+    edges: number;
+    entities: number;
+    entityRelations: number;
+  } {
     return this.db
       .prepare(
         `SELECT
@@ -344,7 +642,9 @@ export class IndexDatabase {
            (SELECT COUNT(*) FROM chunk_vector) as chunkVectors,
            (SELECT COUNT(*) FROM article_vector) as articleVectors,
            (SELECT COUNT(*) FROM event_cluster) as clusters,
-           (SELECT COUNT(*) FROM article_similarity_edge) as edges`
+           (SELECT COUNT(*) FROM article_similarity_edge) as edges,
+           (SELECT COUNT(*) FROM entity) as entities,
+           (SELECT COUNT(*) FROM entity_relation) as entityRelations`
       )
       .get() as any;
   }
