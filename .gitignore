@@ -35,6 +35,10 @@ playwright-report/
 blob-report/
 playwright/.cache/
 
+# Python caches
+__pycache__/
+*.pyc
+
 # System files
 .DS_Store
 Thumbs.db

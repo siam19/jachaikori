@@ -1,0 +1,22 @@
+{
+  "name": "@jachaikori/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/local-dev.ts",
+    "dev:wrangler": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply jachaikori-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply jachaikori-db --remote"
+  },
+  "dependencies": {
+    "@jachaikori/retrieval": "workspace:*",
+    "@jachaikori/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250401.0",
+    "@types/bun": "latest",
+    "wrangler": "^4.10.0"
+  }
+}

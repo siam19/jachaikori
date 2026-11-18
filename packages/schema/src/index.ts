@@ -8,3 +8,7 @@ export * from './outlet';
 export * from './crawler';
 export * from './article';
 export * from './claim';
+export * from './chunk';
+export * from './entity';
+export * from './cluster';
+export * from './search';

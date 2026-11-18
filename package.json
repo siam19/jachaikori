@@ -9,7 +9,11 @@
     "apps/*"
   ],
   "scripts": {
+    "dev": "bun run scripts/dev.ts",
+    "api": "bun --filter @jachaikori/api dev",
+    "web": "bun --filter @jachaikori/web dev",
     "crawler": "bun --filter @jachaikori/crawler run",
+    "backfill": "bun --filter @jachaikori/backfill start",
     "test": "bun test",
     "typecheck": "tsc --noEmit --composite false"
   },
