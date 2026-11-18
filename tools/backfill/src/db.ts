@@ -173,6 +173,28 @@ export class IndexDatabase {
       CREATE INDEX IF NOT EXISTS idx_rel_target ON entity_relation(target_entity_id);
       CREATE INDEX IF NOT EXISTS idx_rel_type ON entity_relation(relation_type);
 
+      CREATE TABLE IF NOT EXISTS event_entity (
+        event_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'mentioned',
+        article_count INTEGER NOT NULL DEFAULT 0,
+        outlet_count INTEGER NOT NULL DEFAULT 0,
+        headline_count INTEGER NOT NULL DEFAULT 0,
+        salience REAL NOT NULL DEFAULT 0,
+        event_start TEXT NOT NULL,
+        event_end TEXT NOT NULL,
+        PRIMARY KEY (event_id, entity_id),
+        FOREIGN KEY (event_id) REFERENCES event_cluster(id) ON DELETE CASCADE,
+        FOREIGN KEY (entity_id) REFERENCES entity(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_event_entity_entity_start ON event_entity(entity_id, event_start);
+      CREATE INDEX IF NOT EXISTS idx_event_entity_start ON event_entity(event_start);
+
+      CREATE TABLE IF NOT EXISTS event_redirect (
+        old_id TEXT PRIMARY KEY,
+        new_id TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS claim (
         id TEXT PRIMARY KEY,
         article_id TEXT NOT NULL,
@@ -622,6 +644,57 @@ export class IndexDatabase {
       }
     });
     tx();
+  }
+
+  materializeEventEntities(): { eventEntityRows: number; eventsCovered: number } {
+    const tx = this.db.transaction(() => {
+      this.db.run('DELETE FROM event_entity');
+      this.db.run(`
+        INSERT INTO event_entity (
+          event_id, entity_id, role, article_count, outlet_count, headline_count, salience, event_start, event_end
+        )
+        SELECT
+          ec.id AS event_id,
+          ae.entity_id AS entity_id,
+          CASE MAX(
+            CASE ae.role
+              WHEN 'quoted_speaker' THEN 5
+              WHEN 'actor' THEN 4
+              WHEN 'subject' THEN 3
+              WHEN 'location' THEN 2
+              ELSE 1
+            END
+          )
+            WHEN 5 THEN 'quoted_speaker'
+            WHEN 4 THEN 'actor'
+            WHEN 3 THEN 'subject'
+            WHEN 2 THEN 'location'
+            ELSE 'mentioned'
+          END AS role,
+          COUNT(DISTINCT ac.article_id) AS article_count,
+          COUNT(DISTINCT a.outlet) AS outlet_count,
+          COUNT(DISTINCT CASE WHEN ae.role IN ('actor', 'subject', 'quoted_speaker') THEN ac.article_id END) AS headline_count,
+          MIN(
+            1.0,
+            (CAST(COUNT(DISTINCT ac.article_id) AS REAL) / MAX(1, ec.article_count)) * 0.60 +
+            (CASE WHEN COUNT(DISTINCT CASE WHEN ae.role IN ('actor', 'subject', 'quoted_speaker') THEN ac.article_id END) > 0 THEN 0.25 ELSE 0.0 END) +
+            (CAST(COUNT(DISTINCT a.outlet) AS REAL) / MAX(1, ec.outlet_count)) * 0.15
+          ) AS salience,
+          COALESCE(ec.first_seen, MIN(a.published_at), '') AS event_start,
+          COALESCE(ec.last_seen, MAX(a.published_at), '') AS event_end
+        FROM article_cluster ac
+        JOIN event_cluster ec ON ec.id = ac.cluster_id
+        JOIN article a ON a.id = ac.article_id
+        JOIN article_entity ae ON ae.article_id = ac.article_id
+        GROUP BY ec.id, ae.entity_id
+      `);
+    });
+    tx();
+
+    const row = this.db
+      .prepare('SELECT COUNT(*) as eventEntityRows, COUNT(DISTINCT event_id) as eventsCovered FROM event_entity')
+      .get() as { eventEntityRows: number; eventsCovered: number };
+    return row;
   }
 
   getCounts(): {

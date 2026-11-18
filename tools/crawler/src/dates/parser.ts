@@ -7,8 +7,8 @@
 import { banglaToAsciiDigits } from './bangla-numerals';
 
 const BANGLA_MONTHS: Record<string, number> = {
-  'জানুয়ারি': 0, 'জানুয়ারি': 0,
-  'ফেব্রুয়ারি': 1, 'ফেব্রুয়ারি': 1,
+  'জানুয়ারি': 0, 'জানুয়ারি': 0, 'জানুয়ারী': 0, 'জানুয়ারী': 0,
+  'ফেব্রুয়ারি': 1, 'ফেব্রুয়ারি': 1, 'ফেব্রুয়ারী': 1, 'ফেব্রুয়ারী': 1,
   'মার্চ': 2,
   'এপ্রিল': 3,
   'মে': 4,
@@ -20,6 +20,20 @@ const BANGLA_MONTHS: Record<string, number> = {
   'নভেম্বর': 10,
   'ডিসেম্বর': 11,
 };
+
+function extractDhakaTime(asciiStr: string): { hours: number; minutes: number } {
+  const timeMatch = asciiStr.match(/(\d{1,2}):(\d{2})(?:\s*(am|pm))?/i);
+  if (!timeMatch) return { hours: 12, minutes: 0 };
+
+  let hours = Number.parseInt(timeMatch[1], 10);
+  const minutes = Number.parseInt(timeMatch[2], 10);
+  const meridiem = timeMatch[3]?.toLowerCase();
+
+  if (meridiem === 'pm' && hours < 12) hours += 12;
+  if (meridiem === 'am' && hours === 12) hours = 0;
+
+  return { hours, minutes };
+}
 
 const ENGLISH_MONTHS: Record<string, number> = {
   january: 0, jan: 0,
@@ -84,10 +98,8 @@ export function parsePublishedDate(raw: string, referenceTime: Date = new Date()
         const day = Number.parseInt(dayYearMatch[1], 10);
         const year = Number.parseInt(dayYearMatch[2], 10);
         
-        // Check for time: "১০:৩০"
-        const timeMatch = asciiStr.match(/(\d{1,2}):(\d{2})/);
-        const hours = timeMatch ? Number.parseInt(timeMatch[1], 10) : 12;
-        const minutes = timeMatch ? Number.parseInt(timeMatch[2], 10) : 0;
+        // Check for time: "১০:৩০" or "11:56 PM"
+        const { hours, minutes } = extractDhakaTime(asciiStr);
 
         // Construct date in Asia/Dhaka (+06:00)
         const dateObj = new Date(Date.UTC(year, monthIndex, day, hours - 6, minutes, 0));
@@ -107,9 +119,7 @@ export function parsePublishedDate(raw: string, referenceTime: Date = new Date()
       if (match) {
         const day = Number.parseInt(match[1], 10);
         const year = Number.parseInt(match[2], 10);
-        const timeMatch = asciiStr.match(/(\d{1,2}):(\d{2})/);
-        const hours = timeMatch ? Number.parseInt(timeMatch[1], 10) : 12;
-        const minutes = timeMatch ? Number.parseInt(timeMatch[2], 10) : 0;
+        const { hours, minutes } = extractDhakaTime(asciiStr);
 
         const dateObj = new Date(Date.UTC(year, monthIndex, day, hours - 6, minutes, 0));
         if (!Number.isNaN(dateObj.getTime())) {

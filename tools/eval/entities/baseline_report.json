@@ -1,12 +1,12 @@
 {
   "totalArticles": 128,
   "linkedArticles": 127,
-  "totalMentions": 834,
-  "totalRelations": 584,
+  "totalMentions": 811,
+  "totalRelations": 529,
   "roleDistribution": {
     "subject": 12,
     "location": 328,
-    "mentioned": 364,
+    "mentioned": 341,
     "quoted_speaker": 109,
     "actor": 21
   },
@@ -28,20 +28,20 @@
       "articles": 61
     },
     {
-      "entityId": "ent_tareque_rahman",
-      "canonicalBn": "তারেক রহমান",
-      "canonicalEn": "Tarique Rahman",
-      "entityType": "person",
-      "mentions": 82,
-      "articles": 48
-    },
-    {
       "entityId": "ent_police",
       "canonicalBn": "পুলিশ",
       "canonicalEn": "Bangladesh Police",
       "entityType": "org",
       "mentions": 75,
       "articles": 37
+    },
+    {
+      "entityId": "ent_tareque_rahman",
+      "canonicalBn": "তারেক রহমান",
+      "canonicalEn": "Tarique Rahman",
+      "entityType": "person",
+      "mentions": 59,
+      "articles": 34
     },
     {
       "entityId": "ent_sheikh_hasina",
@@ -172,95 +172,14 @@
       "articles": 4
     }
   ],
-  "flaggedPmFpCount": 33,
+  "flaggedPmFpCount": 11,
   "flaggedPmFps": [
-    {
-      "articleId": "3b06bc750a68d4908723bb885f4c60fd",
-      "outlet": "bangladesh-protidin",
-      "stratum": "edge_pm",
-      "title": "শাপলা চত্বর হত্যায় যেসব আসামিকে গ্রেফতার দেখালেন ট্রাইব্যুনাল",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "d74f3c2ac0f3b75471ace2b48bd73d75",
-      "outlet": "bdnews24",
-      "stratum": "edge_pm",
-      "title": "পাসপোর্ট ‘পাবেন না’ হাসিনা, দেশে ফেরার উপায় কী?",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "d74f3c2ac0f3b75471ace2b48bd73d75",
-      "outlet": "bdnews24",
-      "stratum": "edge_pm",
-      "title": "পাসপোর্ট ‘পাবেন না’ হাসিনা, দেশে ফেরার উপায় কী?",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "66344a035db989c141e80e0dbf2047ad",
-      "outlet": "business-standard",
-      "stratum": "edge_pm",
-      "title": "JU Chhatra Shakti leader expelled, handed over to police over Hasina birthday comment",
-      "surfaceForm": "prime minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "e8dc59a9c93e2cd11c1a056ff462665d",
-      "outlet": "daily-star",
-      "stratum": "edge_pm",
-      "title": "Hasina names Selim to lead AL in her absence",
-      "surfaceForm": "prime minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
     {
       "articleId": "e8dc59a9c93e2cd11c1a056ff462665d",
       "outlet": "daily-star",
       "stratum": "edge_pm",
       "title": "Hasina names Selim to lead AL in her absence",
       "surfaceForm": "Prime Minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "5959236f50dd3dbe937a102be4054f2b",
-      "outlet": "ittefaq",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনার নতুন পাসপোর্ট চেয়ে ই-মেইল এসেছে দিল্লিতে, পাঠানো হয়েছে ঢাকায়",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "2aa7192421b60177ef217e7a53be3b11",
-      "outlet": "jugantor",
-      "stratum": "edge_pm",
-      "title": "ঝটিকা মিছিলের পরদিন নিষিদ্ধ ছাত্রলীগ নেতা গ্রেফতার",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "9569ea0854e01bd522dc40eaa2499258",
-      "outlet": "kaler-kantho",
-      "stratum": "edge_pm",
-      "title": "মৃত্যুদণ্ডপ্রাপ্ত শেখ হাসিনার পুনর্বিচারের সুযোগ নেই : চিফ প্রসিকিউটর",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "07a650311dc9f3bbb20846e95cc49d10",
-      "outlet": "prothom-alo",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনার সঙ্গে যোগাযোগ রাখছেন এমন শিক্ষকদের খুঁজতে কমিটি",
-      "surfaceForm": "প্রধানমন্ত্রী",
       "entityId": "ent_tareque_rahman",
       "canonicalEn": "Tarique Rahman"
     },
@@ -274,24 +193,6 @@
       "canonicalEn": "Tarique Rahman"
     },
     {
-      "articleId": "5c70d40a17d909261e3bc26d825babdd",
-      "outlet": "bdnews24",
-      "stratum": "edge_pm",
-      "title": "হোসেন হত্যা: হাসিনাসহ ৩৪ জনের অভিযোগ গঠন শুনানি ১ সেপ্টেম্বর",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "6281485cb85cb3eba349f5f9ca6805aa",
-      "outlet": "business-standard",
-      "stratum": "edge_pm",
-      "title": "Dhaka seeks Delhi's clarification on Hasina's planned 5 Aug virtual appearance",
-      "surfaceForm": "prime minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
       "articleId": "6281485cb85cb3eba349f5f9ca6805aa",
       "outlet": "business-standard",
       "stratum": "edge_pm",
@@ -301,24 +202,6 @@
       "canonicalEn": "Tarique Rahman"
     },
     {
-      "articleId": "fea7a75bbdf533b5ea2d45744d6700b6",
-      "outlet": "daily-star",
-      "stratum": "edge_pm",
-      "title": "India flouts norms over Hasina press conference - Says Jamaat",
-      "surfaceForm": "prime minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "a25dbf3725c43af2f4e8c2a2bea90c04",
-      "outlet": "ittefaq",
-      "stratum": "edge_pm",
-      "title": "ইমরান খানের মুক্তির দাবিতে ইসলামাবাদ অভিমুখে হাজারো সমর্থকের লং মার্চ",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
       "articleId": "a25dbf3725c43af2f4e8c2a2bea90c04",
       "outlet": "ittefaq",
       "stratum": "edge_pm",
@@ -328,55 +211,10 @@
       "canonicalEn": "Tarique Rahman"
     },
     {
-      "articleId": "5f91ebfd7bc37a1779f7507e688e2a26",
-      "outlet": "jugantor",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনাকে ভারত থেকে ‘পুশইন’ করে ফেরত পাঠানোর আহ্বান মাহমুদুর রহমান সুমনের",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "0e6f8a7ab49551f9b0623ae026ee20c2",
-      "outlet": "kaler-kantho",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনার পাসপোর্ট আবেদনের কপি ঢাকায় পাঠানো হয়েছে",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
       "articleId": "bac49c5b3e9916898ae64f36ebd558ba",
       "outlet": "prothom-alo",
       "stratum": "edge_pm",
       "title": "শেখ হাসিনার বিষয়ে মন্ত্রীদের বক্তব্যে মিল পাচ্ছেন না রুমিন ফারহানা",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "bac49c5b3e9916898ae64f36ebd558ba",
-      "outlet": "prothom-alo",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনার বিষয়ে মন্ত্রীদের বক্তব্যে মিল পাচ্ছেন না রুমিন ফারহানা",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "575687169d737a9680aff7cce046d1cb",
-      "outlet": "bangladesh-protidin",
-      "stratum": "edge_pm",
-      "title": "আরাফাত রহমান কোকোর জন্মদিনে বনানী কবরস্থানে শ্রদ্ধা নিবেদন",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "3c8b90fc13fc17352f36d0c6b0dbc620",
-      "outlet": "bdnews24",
-      "stratum": "edge_pm",
-      "title": "সালমান রহমানের পক্ষে লড়তে চান ব্রিটিশ আইনজীবী, বার কাউন্সিলে আবেদন",
       "surfaceForm": "প্রধানমন্ত্রীর",
       "entityId": "ent_tareque_rahman",
       "canonicalEn": "Tarique Rahman"
@@ -413,34 +251,7 @@
       "outlet": "bdnews24",
       "stratum": "stratified",
       "title": "হাসিনা নিজেই আসতে চান, তাহলে প্রত্যর্পণে ভারতের সমস্যা কোথায়: তথ্য উপদেষ্টা",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "d6843e2d3ba059cbbf4dccfe4b50f45a",
-      "outlet": "bdnews24",
-      "stratum": "stratified",
-      "title": "হাসিনা নিজেই আসতে চান, তাহলে প্রত্যর্পণে ভারতের সমস্যা কোথায়: তথ্য উপদেষ্টা",
       "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "42efd2c75611311f2dd93ed4fdf713fd",
-      "outlet": "bdnews24",
-      "stratum": "stratified",
-      "title": "নতুন পাসপোর্টের আবেদন করেছেন শেখ হাসিনা: রয়টার্স",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "e218c776da8dd7699f6b1e840cdfff93",
-      "outlet": "ittefaq",
-      "stratum": "stratified",
-      "title": "সমালোচনার মুখে হ্যান্ডকাফ-বুলেটপ্রুফ জ্যাকেট পরিয়ে ট্রাইব্যুনালে জিয়াউল আহসান",
-      "surfaceForm": "প্রধানমন্ত্রী",
       "entityId": "ent_tareque_rahman",
       "canonicalEn": "Tarique Rahman"
     },
@@ -458,15 +269,6 @@
       "outlet": "prothom-alo",
       "stratum": "stratified",
       "title": "বাংলাদেশ–ভারত সম্পর্ক নতুন করে শুরুর বিষয়ে ঐকমত্য",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "b605212a56d6ae5bd627c00311e859a7",
-      "outlet": "prothom-alo",
-      "stratum": "stratified",
-      "title": "দেশে ফিরতে হাসিনা চাইলেন পাসপোর্ট-এনআইডি",
       "surfaceForm": "প্রধানমন্ত্রী",
       "entityId": "ent_tareque_rahman",
       "canonicalEn": "Tarique Rahman"

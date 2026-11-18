@@ -31,10 +31,13 @@ describe('Date Parsing', () => {
     expect(result).toBe('2026-11-14T09:00:00.000Z');
   });
 
-  it('parses absolute Bangla date strings', () => {
+  it('parses absolute Bangla date strings including জানুয়ারী and AM/PM', () => {
     const result = parsePublishedDate('১২ মে ২০২৪, ১০:৩০');
     expect(result).toBeDefined();
     expect(result).toContain('2024-05-12');
+
+    const bdnewsJan = parsePublishedDate('প্রকাশিত :\n 31 জানুয়ারী 2026, 11:56\n PM');
+    expect(bdnewsJan).toBe('2026-01-31T17:56:00.000Z');
   });
 
   it('parses English date strings', () => {

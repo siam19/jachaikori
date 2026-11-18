@@ -13,6 +13,7 @@ import { PoliteHttpClient } from './engine/http';
 import { BrowserPool } from './engine/browser';
 import { runCrawlJob } from './engine/runner';
 import { runArticleScraper } from './engine/scraper';
+import { evaluateHeadlineForPrune } from './engine/prune';
 import type { ScrapeDashboard } from './ui/scrape-dashboard';
 import { getAllOutlets, getOutlet, isAllowedArticleUrl } from '@jachaikori/outlets';
 import type { OutletCrawler } from '@jachaikori/outlets';
@@ -643,6 +644,100 @@ program
     } catch (err: any) {
       s.stop(color.red(`Recon failed: ${err.message}`));
       p.outro(color.red('Failed'));
+    }
+  });
+
+// ==========================================
+// Command: prune-headlines
+// ==========================================
+program
+  .command('prune-headlines')
+  .description('Optionally reactivates skipped rows and marks low-signal headlines as skipped before scraping')
+  .option('--reactivate-skipped', 'Convert currently skipped articles back to discovered before pruning', false)
+  .option('--dry-run', 'Preview prune counts without modifying data/catalog.sqlite', false)
+  .action((opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Headline Low-Signal Pruner ')));
+
+    const catalog = new CatalogDatabase();
+    const db = (catalog as unknown as { db: import('bun:sqlite').Database }).db;
+
+    try {
+      let reactivated = 0;
+      if (opts.reactivateSkipped) {
+        const countRow = db
+          .query<{ cnt: number }, []>("SELECT COUNT(*) AS cnt FROM article WHERE status = 'skipped'")
+          .get();
+        reactivated = countRow?.cnt ?? 0;
+        if (!opts.dryRun && reactivated > 0) {
+          db.query("UPDATE article SET status = 'discovered' WHERE status = 'skipped'").run();
+        }
+        p.log.info(
+          opts.dryRun
+            ? `Would reactivate ${reactivated.toLocaleString()} skipped articles -> discovered`
+            : `Reactivated ${reactivated.toLocaleString()} skipped articles -> discovered`
+        );
+      }
+
+      const candidates = db
+        .query<{ id: string; outlet: string; canonical_url: string; title: string }, []>(
+          "SELECT id, outlet, canonical_url, title FROM article WHERE status = 'discovered'"
+        )
+        .all();
+
+      const byReason = new Map<string, number>();
+      const byOutlet = new Map<string, number>();
+      const toSkipIds: string[] = [];
+
+      for (const row of candidates) {
+        const decision = evaluateHeadlineForPrune({
+          outlet: row.outlet,
+          canonicalUrl: row.canonical_url,
+          title: row.title,
+        });
+        if (decision.skip && decision.reason) {
+          toSkipIds.push(row.id);
+          byReason.set(decision.reason, (byReason.get(decision.reason) ?? 0) + 1);
+          byOutlet.set(row.outlet, (byOutlet.get(row.outlet) ?? 0) + 1);
+        }
+      }
+
+      if (!opts.dryRun && toSkipIds.length > 0) {
+        const update = db.prepare("UPDATE article SET status = 'skipped' WHERE id = ?");
+        const tx = db.transaction((ids: string[]) => {
+          for (const id of ids) update.run(id);
+        });
+        tx(toSkipIds);
+      }
+
+      const reasonLines = Array.from(byReason.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => `${reason.padEnd(32)} ${count.toLocaleString()}`);
+      const outletLines = Array.from(byOutlet.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([outlet, count]) => `${outlet.padEnd(24)} ${count.toLocaleString()}`);
+
+      p.note(
+        [
+          `Evaluated: ${candidates.length.toLocaleString()} discovered articles`,
+          `Pruned:    ${toSkipIds.length.toLocaleString()} low-signal articles`,
+          `Remaining: ${(candidates.length - toSkipIds.length).toLocaleString()} active pending scrape`,
+          '',
+          'By Reason:',
+          ...(reasonLines.length > 0 ? reasonLines : ['  (none)']),
+          '',
+          'By Outlet:',
+          ...(outletLines.length > 0 ? outletLines : ['  (none)']),
+        ].join('\n'),
+        opts.dryRun ? 'Dry-Run Summary' : 'Prune Applied'
+      );
+
+      p.outro(
+        opts.dryRun
+          ? color.yellow('Dry-run complete (database unchanged)')
+          : color.green(`Marked ${toSkipIds.length.toLocaleString()} low-signal articles as skipped`)
+      );
+    } finally {
+      catalog.close();
     }
   });
 

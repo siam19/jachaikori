@@ -975,7 +975,27 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
     salience: r.salience,
   }));
 
-  return json({ centerEntity: centerRow, nMe, nAll, neighbors, events });
+  const incidence: Array<{ eventId: string; entityId: string; role: string; salience: number }> = [];
+  const eventIds = events.map((e) => e.id as string);
+  const entityIds = [entityId, ...neighbors.map((n) => n.id as string)];
+  if (eventIds.length > 0 && entityIds.length > 0) {
+    for (const evChunk of chunkArray(eventIds, 40)) {
+      for (const entChunk of chunkArray(entityIds, 40)) {
+        const evPlaceholders = evChunk.map(() => '?').join(',');
+        const entPlaceholders = entChunk.map(() => '?').join(',');
+        const incRows = await env.DB.prepare(
+          `SELECT event_id as eventId, entity_id as entityId, role, salience
+           FROM event_entity
+           WHERE event_id IN (${evPlaceholders}) AND entity_id IN (${entPlaceholders})`
+        )
+          .bind(...evChunk, ...entChunk)
+          .all<{ eventId: string; entityId: string; role: string; salience: number }>();
+        incidence.push(...(incRows.results ?? []));
+      }
+    }
+  }
+
+  return json({ centerEntity: centerRow, nMe, nAll, neighbors, events, incidence });
 }
 
 async function handleEntityActivity(entityId: string, url: URL, env: ApiEnv): Promise<Response> {
@@ -1156,8 +1176,28 @@ async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Respon
     .bind(eventId)
     .all<any>();
 
-  const articles = articleRows.results ?? [];
-  const articleIds = articles.map((a: any) => a.id as string);
+  const rawArticles = articleRows.results ?? [];
+  const articleIds = rawArticles.map((a: any) => a.id as string);
+  const articleEntityMap = new Map<string, string[]>();
+  for (const chunk of chunkArray(articleIds, 80)) {
+    const placeholders = chunk.map(() => '?').join(',');
+    const aeRows = await env.DB.prepare(
+      `SELECT article_id as articleId, entity_id as entityId
+       FROM article_entity
+       WHERE article_id IN (${placeholders})`
+    )
+      .bind(...chunk)
+      .all<{ articleId: string; entityId: string }>();
+    for (const row of aeRows.results ?? []) {
+      const list = articleEntityMap.get(row.articleId) ?? [];
+      list.push(row.entityId);
+      articleEntityMap.set(row.articleId, list);
+    }
+  }
+  const articles = rawArticles.map((a: any) => ({
+    ...a,
+    entityIds: articleEntityMap.get(a.id) ?? [],
+  }));
 
   const edgeMap = new Map<
     string,

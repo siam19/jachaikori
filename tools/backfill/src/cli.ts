@@ -710,6 +710,22 @@ program
     const lines = raw.split(/\r?\n/).filter((l) => l.trim().length > 0);
 
     const idx = new IndexDatabase(opts.index);
+    const existingEntityTypes = new Map<string, Entity['entityType']>();
+    for (const row of idx.getRawDb().prepare('SELECT id, entity_type as entityType FROM entity').all() as Array<{ id: string; entityType: Entity['entityType'] }>) {
+      existingEntityTypes.set(row.id, row.entityType);
+    }
+
+    const inferEntityType = (rawType: unknown, bn?: string | null, en?: string | null): Entity['entityType'] => {
+      if (rawType === 'person' || rawType === 'org' || rawType === 'location' || rawType === 'role' || rawType === 'event_topic') {
+        return rawType;
+      }
+      const combined = `${en ?? ''} ${bn ?? ''}`;
+      if (/\b(?:bank|police|court|tribunal|ministry|commission|committee|party|limited|ltd|corp|university|hospital|association|council|league)\b|ব্যাংক|পুলিশ|আদালত|কোর্ট|মন্ত্রণালয়|কমিশন|কমিটি|পার্টি|লীগ|দল|লিমিটেড|বিশ্ববিদ্যালয়|হাসপাতাল/i.test(combined)) {
+        return 'org';
+      }
+      return 'person';
+    };
+
     const promotedEntities = new Map<string, Entity>();
     const promotedAliases = new Map<string, EntityAlias>();
     const mentions: ArticleEntityMention[] = [];
@@ -737,8 +753,72 @@ program
       }
 
       const articleId = parsedJson.articleId ?? parsedJson.custom_id;
-      const payload = parsedJson.extraction ?? parsedJson;
-      const validated = LlmArticleExtractionSchema.safeParse({ ...payload, articleId });
+      let payload = parsedJson.extraction ?? parsedJson;
+      if (Array.isArray(payload)) {
+        payload = payload[0] ?? {};
+      }
+      if (!payload || typeof payload !== 'object') {
+        invalidRows++;
+        continue;
+      }
+
+      const rawEntities = Array.isArray(payload.entities) ? payload.entities : [];
+      const normalizedEntities = rawEntities
+        .filter((e: any) => e && typeof e === 'object')
+        .map((e: any) => {
+          const rawId = typeof e.entityId === 'string' ? e.entityId : typeof e.id === 'string' ? e.id : null;
+          const validExistingId = rawId && existingEntityTypes.has(rawId) ? rawId : null;
+          const canonicalBn = typeof e.canonicalBn === 'string' && e.canonicalBn.trim() ? e.canonicalBn.trim() : null;
+          const canonicalEn = typeof e.canonicalEn === 'string' && e.canonicalEn.trim() ? e.canonicalEn.trim() : null;
+          const surfaceForm =
+            (typeof e.surfaceForm === 'string' && e.surfaceForm.trim()) ||
+            canonicalBn ||
+            canonicalEn ||
+            '';
+          return {
+            entityId: validExistingId,
+            canonicalBn,
+            canonicalEn,
+            entityType: validExistingId
+              ? existingEntityTypes.get(validExistingId)!
+              : inferEntityType(e.entityType, canonicalBn, canonicalEn),
+            surfaceForm,
+            role: e.role ?? 'mentioned',
+            confidence: typeof e.confidence === 'number' ? e.confidence : 0.85,
+          };
+        })
+        .filter((e: any) => e.surfaceForm.length > 0);
+
+      const rawClaims = Array.isArray(payload.claims) ? payload.claims : [];
+      const normalizedClaims = rawClaims
+        .map((c: any) => {
+          if (typeof c === 'string') {
+            return c.trim() ? { claimText: c.trim() } : null;
+          }
+          if (!c || typeof c !== 'object') return null;
+          const claimText = [c.claimText, c.claimTextBn, c.claimBn, c.claim, c.statement, c.fact, c.claimSentence, c.claimEn]
+            .find((v) => typeof v === 'string' && v.trim().length > 0);
+          if (!claimText) return null;
+          const evidenceSnippet = [c.evidenceSnippet, c.evidence, c.supportingQuote, c.supportingText, c.supporting_text, c.sourceText]
+            .find((v) => typeof v === 'string' && v.trim().length > 0) ?? null;
+          const subjId = typeof c.subjectEntityId === 'string' && existingEntityTypes.has(c.subjectEntityId) ? c.subjectEntityId : null;
+          const objId = typeof c.objectEntityId === 'string' && existingEntityTypes.has(c.objectEntityId) ? c.objectEntityId : null;
+          return {
+            claimText: claimText.trim(),
+            claimType: typeof c.claimType === 'string' ? c.claimType : typeof c.category === 'string' ? c.category : 'factual',
+            subjectEntityId: subjId,
+            objectEntityId: objId,
+            evidenceSnippet,
+            confidence: typeof c.confidence === 'number' ? c.confidence : 0.85,
+          };
+        })
+        .filter(Boolean);
+
+      const validated = LlmArticleExtractionSchema.safeParse({
+        articleId,
+        entities: normalizedEntities,
+        claims: normalizedClaims,
+      });
       if (!validated.success || !articleId) {
         invalidRows++;
         continue;
@@ -825,6 +905,31 @@ program
       'LLM Extraction Ingest Summary'
     );
     p.outro(color.dim('Done!'));
+  });
+
+// ==========================================
+// Command: materialize-events
+// ==========================================
+program
+  .command('materialize-events')
+  .description('Aggregates article_entity + article_cluster into event_entity for the event-centric visualizer')
+  .option('--index <path>', 'Path to index.sqlite', DEFAULT_INDEX)
+  .action((opts) => {
+    p.intro(color.bgCyan(color.black(' Jachaikori · Materialize Event-Entity Hypergraph ')));
+    const s = p.spinner();
+    s.start('Materializing event_entity incidence rows...');
+
+    const startedAt = Date.now();
+    const idx = new IndexDatabase(opts.index);
+    const stats = idx.materializeEventEntities();
+    idx.close();
+
+    s.stop(
+      color.green(
+        `Materialized ${stats.eventEntityRows.toLocaleString()} event_entity rows across ${stats.eventsCovered.toLocaleString()} events in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+      )
+    );
+    p.outro(color.dim('Ready for /entities/:id/ego, /entities/:id/activity, and /events/:id/graph!'));
   });
 
 await program.parseAsync(process.argv);

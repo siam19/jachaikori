@@ -8,7 +8,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { buildSeedRegistry, EntityHypergraphResolver } from '@jachaikori/entities';
+import { buildSeedRegistry, EntityHypergraphResolver } from '../../../packages/entities/src';
 import type { EvalArticleRecord } from './sample';
 
 interface FlaggedPmFp {

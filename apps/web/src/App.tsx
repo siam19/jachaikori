@@ -519,15 +519,10 @@ export function App() {
             </div>
 
             {graphMode === 'timeline' ? (
-            <EntityTimelineView
-              entityId={activeTimelineEntityId ?? entityGraph?.centerEntity?.id ?? entities[0]?.id ?? null}
-              lang={lang}
-              onSelectEntity={(id) => {
-                setActiveTimelineEntityId(id);
-                setGraphMode('timeline');
-              }}
-            />
-          ) : graphMode === 'article' ? (
+              <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                {lang === 'bn' ? 'এন্টিটি টাইমলাইন ও ইভেন্ট' : 'Entity Timeline & Events'}
+              </span>
+            ) : graphMode === 'article' ? (
               <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span>
                   {t.simLabel} {minSimilarity.toFixed(2)}
@@ -643,15 +638,29 @@ export function App() {
 
           <div className="pane-scroll">
             {graphMode === 'timeline' ? (
-            <EntityTimelineView
-              entityId={activeTimelineEntityId ?? entityGraph?.centerEntity?.id ?? entities[0]?.id ?? null}
-              lang={lang}
-              onSelectEntity={(id) => {
-                setActiveTimelineEntityId(id);
-                setGraphMode('timeline');
-              }}
-            />
-          ) : graphMode === 'article' ? (
+              <div className="card" style={{ cursor: 'default', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  {lang === 'bn' ? 'টাইমলাইন নির্দেশিকা' : 'Timeline Guide'}
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: 'var(--muted)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <li>
+                    {lang === 'bn'
+                      ? 'গ্রাফের বৃত্তে ক্লিক করলে ইভেন্ট ও এর সংবাদগুলো খুলবে।'
+                      : 'Click any event circle to inspect its entities and linked articles.'}
+                  </li>
+                  <li>
+                    {lang === 'bn'
+                      ? 'ইভেন্টের ভেতরে এন্টিটিতে হোভার করলে সংশ্লিষ্ট সংবাদ হাইলাইট হবে।'
+                      : 'Hover an entity inside an event to highlight the articles mentioning it.'}
+                  </li>
+                  <li>
+                    {lang === 'bn'
+                      ? 'যেকোনো এন্টিটিতে ক্লিক করলে সেটি কেন্দ্রে আসবে, এবং ← Back বোতামে আগের অবস্থায় ফেরা যাবে।'
+                      : 'Click an entity to center on it, and use ← Back to return.'}
+                  </li>
+                </ul>
+              </div>
+            ) : graphMode === 'article' ? (
               <>
                 {graphData?.entities && graphData.entities.length > 0 && (
                   <div className="card" style={{ cursor: 'default' }}>

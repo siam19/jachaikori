@@ -57,7 +57,7 @@ export function renderEgo(svgEl: SVGSVGElement, data: EgoResponse, o: EgoOptions
         id: e.id,
         kind: 'entity' as const,
         entity: e,
-        r: 6 + 2.5 * Math.sqrt(Math.max(1, e.eventCount)),
+        r: Math.min(18, 6 + 1.8 * Math.log2(1 + Math.max(1, e.eventCount))),
         tx: a ? a.sum / a.n : width / 2,
       };
     }),
@@ -65,7 +65,7 @@ export function renderEgo(svgEl: SVGSVGElement, data: EgoResponse, o: EgoOptions
       id: ev.id,
       kind: 'event' as const,
       event: ev,
-      r: 4 + 2 * Math.sqrt(Math.max(1, ev.articleCount)),
+      r: Math.min(13, 4.5 + 1.2 * Math.log2(1 + Math.max(1, ev.articleCount))),
       tx: eventX.get(ev.id) ?? width / 2,
     })),
   ];
@@ -102,10 +102,10 @@ export function renderEgo(svgEl: SVGSVGElement, data: EgoResponse, o: EgoOptions
         .distance(70)
         .strength((l) => 0.15 + 0.5 * l.salience),
     )
-    .force('x', d3.forceX<N>((d) => d.tx).strength((d) => (d.kind === 'event' ? 0.9 : 0.12)))
-    .force('y', d3.forceY<N>(height / 2).strength(0.04))
-    .force('charge', d3.forceManyBody<N>().strength((d) => (d.kind === 'event' ? -40 : -120)))
-    .force('collide', d3.forceCollide<N>((d) => d.r + 3));
+    .force('x', d3.forceX<N>((d) => d.tx).strength((d) => (d.kind === 'event' ? 0.85 : 0.35)))
+    .force('y', d3.forceY<N>(height / 2).strength(0.05))
+    .force('charge', d3.forceManyBody<N>().strength((d) => (d.kind === 'event' ? -90 : -220)))
+    .force('collide', d3.forceCollide<N>((d) => d.r + 10));
 
   const link = g
     .append('g')

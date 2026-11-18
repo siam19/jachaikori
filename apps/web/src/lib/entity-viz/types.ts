@@ -45,8 +45,18 @@ export interface EventEdge {
   evidence: { articleId: string; outlet: string; snippet: string }[];
 }
 
+export interface EventArticle {
+  id: string;
+  title: string;
+  publishedAt: string | null;
+  canonicalUrl: string;
+  outlet: string;
+  entityIds: string[];
+}
+
 export interface EventGraphResponse {
   event: EventNode;
   entities: (EntityNode & { roles: string[]; salience: number })[];
   edges: EventEdge[];
+  articles?: EventArticle[];
 }

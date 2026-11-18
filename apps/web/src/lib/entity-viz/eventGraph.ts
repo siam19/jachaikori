@@ -14,6 +14,7 @@ export interface EventGraphOptions {
   lang: Lang;
   onEdge: (edge: EventEdge) => void;
   onEntity: (id: string) => void;
+  onHoverEntity?: (id: string | null) => void;
 }
 
 export function renderEventGraph(
@@ -109,6 +110,10 @@ export function renderEventGraph(
     .attr('aria-label', (d) => labelFor(d.e, lang))
     .style('cursor', 'pointer')
     .on('click', (_, d) => o.onEntity(d.id))
+    .on('mouseenter', (_, d) => o.onHoverEntity?.(d.id))
+    .on('mouseleave', () => o.onHoverEntity?.(null))
+    .on('focus', (_, d) => o.onHoverEntity?.(d.id))
+    .on('blur', () => o.onHoverEntity?.(null))
     .on('keydown', (e: KeyboardEvent, d) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
