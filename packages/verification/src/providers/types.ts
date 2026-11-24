@@ -5,7 +5,10 @@
 
 import type {
   CardExtraction,
+  ClaimDiffItem,
+  EmptyStateNotice,
   OutletId,
+  StoredArticleClaim,
   VlmProviderId,
   VlmProviderPreference,
 } from '@jachaikori/schema';
@@ -48,6 +51,54 @@ export interface RerankCandidateScore {
 export interface RerankResult {
   scores: RerankCandidateScore[];
   usage: ProviderUsage;
+}
+
+export interface ArticleClaimExtractInput {
+  articleId: string;
+  outlet: OutletId;
+  title: string;
+  publishedAt: string | null;
+  text: string;
+}
+
+export interface ArticleClaimExtractResult {
+  claims: Array<{
+    claimText: string;
+    claimType: string;
+    speakerName: string | null;
+    subjectName: string | null;
+    objectName: string | null;
+    numbers: string[];
+    dates: string[];
+    hedgingLevel: 'certain' | 'reported' | 'hedged' | 'conditional';
+    evidenceSnippet: string | null;
+  }>;
+  usage: ProviderUsage;
+}
+
+export interface ClaimDiffJudgeInput {
+  extraction: CardExtraction;
+  article: {
+    articleId: string;
+    outlet: OutletId;
+    title: string;
+    publishedAt: string | null;
+    snippet: string;
+  };
+  articleClaims: StoredArticleClaim[];
+}
+
+export interface ClaimDiffJudgeResult {
+  diffs: ClaimDiffItem[];
+  summary: EmptyStateNotice | null;
+  usage: ProviderUsage;
+}
+
+export interface ClaimDiffJudge {
+  readonly providerId: VlmProviderId;
+  readonly modelVersion: string;
+  extractArticleClaims(input: ArticleClaimExtractInput): Promise<ArticleClaimExtractResult>;
+  compareClaims(input: ClaimDiffJudgeInput): Promise<ClaimDiffJudgeResult>;
 }
 
 export interface VlmExtractor {

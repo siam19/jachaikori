@@ -543,4 +543,95 @@ describe('API Worker Routes', () => {
       db.close();
     }
   });
+
+  it('serves Sprint 7 claim-level diffs on POST /verify, GET /events/:id/comparison, and GET /articles/:id/claims', async () => {
+    const { db, env: baseEnv } = createTestEnv();
+    try {
+      // Seed structured Stage B claims on the two clustered articles (`art-pa-1` and `art-ds-1`)
+      db.run(
+        `INSERT INTO claim (
+           id, article_id, claim_text, claim_type, speaker_entity_id,
+           numbers_json, dates_json, hedging_level, evidence_snippet, confidence, extractor_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'clm-pa-1',
+          'art-pa-1',
+          'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্পে ৫০০ কোটি টাকা বিনিয়োগ চুক্তি সই হয়েছে।',
+          'factual',
+          null,
+          JSON.stringify(['৫০০ কোটি টাকা']),
+          JSON.stringify(['2026-11-12']),
+          'certain',
+          'নতুন এলএনজি টার্মিনাল নির্মাণে ৫০০ কোটি টাকার চুক্তি সই হয়েছে।',
+          0.92,
+          'v2',
+        ]
+      );
+      db.run(
+        `INSERT INTO claim (
+           id, article_id, claim_text, claim_type, speaker_entity_id,
+           numbers_json, dates_json, hedging_level, evidence_snippet, confidence, extractor_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          'clm-ds-1',
+          'art-ds-1',
+          'Bangladesh may invest Tk 5 billion in the Coxs Bazar LNG terminal.',
+          'factual',
+          null,
+          JSON.stringify(['Tk 5 billion']),
+          JSON.stringify(['2026-11-12']),
+          'hedged',
+          'Bangladesh may invest Tk 5 billion in the LNG terminal.',
+          0.9,
+          'v2',
+        ]
+      );
+
+      // 1) GET /articles/:id/claims
+      const clmRes = await handleApiRequest(new Request('http://localhost/articles/art-pa-1/claims'), baseEnv);
+      expect(clmRes.status).toBe(200);
+      const clmData = (await clmRes.json()) as any;
+      expect(clmData.claims.length).toBe(1);
+      expect(clmData.claims[0].numbers).toContain('৫০০ কোটি টাকা');
+
+      // 2) GET /events/:id/comparison
+      const compRes = await handleApiRequest(new Request('http://localhost/events/clu_art-pa-1/comparison'), baseEnv);
+      expect(compRes.status).toBe(200);
+      const comp = (await compRes.json()) as any;
+      expect(comp.firstToPublish.articleId).toBe('art-pa-1');
+      expect(comp.firstToPublish.outlet).toBe('prothom-alo');
+      expect(comp.outletCoverage.length).toBe(8);
+      expect(comp.totalClaimsAnalyzed).toBe(2);
+      expect(comp.crossOutletDifferences.some((d: any) => d.kind === 'consensus_number')).toBe(true);
+      expect(comp.crossOutletDifferences.some((d: any) => d.kind === 'hedging_difference')).toBe(true);
+
+      // 3) POST /verify with distorted figure ("৫০ কোটি টাকা" vs accredited "৫০০ কোটি টাকা")
+      const verifyRes = await handleApiRequest(
+        new Request('http://localhost/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: 'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্পে ৫০ কোটি টাকা চুক্তি সই হয়েছে',
+          }),
+        }),
+        { ...baseEnv, VLM_PROVIDER: 'auto' }
+      );
+      expect(verifyRes.status).toBe(200);
+      const verified = (await verifyRes.json()) as any;
+      expect(verified.status).toBe('matched');
+      expect(verified.overallDiffStatus).toBe('significant_differences');
+      expect(verified.sources[0].diffFlags).toContain('mismatch_number');
+      expect(verified.sources[0].diffs.some((d: any) => d.flag === 'mismatch_number' && d.deterministic)).toBe(true);
+      expect(verified.stageTimingsMs.diffMs).toBeGreaterThanOrEqual(0);
+
+      // 4) Persisted diffs survive GET /checks/:id
+      const savedRes = await handleApiRequest(new Request(`http://localhost/checks/${verified.id}`), baseEnv);
+      expect(savedRes.status).toBe(200);
+      const saved = (await savedRes.json()) as any;
+      expect(saved.overallDiffStatus).toBe('significant_differences');
+      expect(saved.sources[0].diffFlags).toContain('mismatch_number');
+    } finally {
+      db.close();
+    }
+  });
 });

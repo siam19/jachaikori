@@ -7,18 +7,32 @@
  * Pure Web Standard (`fetch`), zero Node-only deps — runs on Cloudflare Workers & Bun.
  */
 
-import type { CardExtraction } from '@jachaikori/schema';
+import {
+  CardExtractionSchema,
+  ClaimDiffItemSchema,
+  type CardExtraction,
+  type ClaimDiffItem,
+} from '@jachaikori/schema';
 import { bytesToBase64, type SupportedImageMime } from '../image-hash';
 import {
+  buildArticleClaimsPrompt,
+  buildClaimDiffPrompt,
   buildImageExtractionPrompt,
   buildRerankPrompt,
   buildTextExtractionPrompt,
   CARD_EXTRACTION_RESPONSE_SCHEMA,
+  CLAIM_DIFF_RESPONSE_SCHEMA,
+  ON_DEMAND_ARTICLE_CLAIMS_SCHEMA,
   RERANK_RESPONSE_SCHEMA,
 } from '../prompts';
 import { extractJsonObject, parseCardExtraction } from './json-utils';
 import type {
+  ArticleClaimExtractInput,
+  ArticleClaimExtractResult,
   CandidateReranker,
+  ClaimDiffJudge,
+  ClaimDiffJudgeInput,
+  ClaimDiffJudgeResult,
   GeminiProviderConfig,
   RerankCandidateInput,
   RerankCandidateScore,
@@ -43,7 +57,7 @@ interface GeminiRawResponse {
   };
 }
 
-export class GeminiFlashAdapter implements VlmExtractor, CandidateReranker {
+export class GeminiFlashAdapter implements VlmExtractor, CandidateReranker, ClaimDiffJudge {
   readonly providerId = 'gemini' as const;
   readonly modelVersion: string;
   private readonly cfg: GeminiProviderConfig;
@@ -277,6 +291,123 @@ export class GeminiFlashAdapter implements VlmExtractor, CandidateReranker {
 
     return {
       scores,
+      usage: {
+        provider: this.providerId,
+        modelVersion: this.modelVersion,
+        inputTokens,
+        outputTokens,
+        costUsd,
+      },
+    };
+  }
+
+  async extractArticleClaims(input: ArticleClaimExtractInput): Promise<ArticleClaimExtractResult> {
+    const prompt = buildArticleClaimsPrompt({
+      outlet: input.outlet,
+      publishedAt: input.publishedAt,
+      title: input.title,
+      text: input.text,
+    });
+    const { parsed, inputTokens, outputTokens, costUsd } = await this.generateStructuredJson(
+      [{ text: prompt }],
+      ON_DEMAND_ARTICLE_CLAIMS_SCHEMA as unknown as Record<string, unknown>,
+      0.0
+    );
+    const obj = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as { claims?: any[] };
+    const claims = (obj.claims ?? [])
+      .filter((c) => c && typeof c.claimText === 'string' && c.claimText.trim())
+      .slice(0, 6)
+      .map((c) => {
+        const hl = String(c.hedgingLevel ?? 'reported');
+        const hedgingLevel: 'certain' | 'reported' | 'hedged' | 'conditional' =
+          hl === 'certain' || hl === 'reported' || hl === 'hedged' || hl === 'conditional'
+            ? hl
+            : 'reported';
+        return {
+          claimText: String(c.claimText).trim(),
+          claimType: typeof c.claimType === 'string' && c.claimType.trim() ? c.claimType.trim() : 'factual',
+          speakerName: typeof c.speakerName === 'string' && c.speakerName.trim() ? c.speakerName.trim() : null,
+          subjectName: typeof c.subjectName === 'string' && c.subjectName.trim() ? c.subjectName.trim() : null,
+          objectName: typeof c.objectName === 'string' && c.objectName.trim() ? c.objectName.trim() : null,
+          numbers: Array.isArray(c.numbers) ? c.numbers.map(String).filter(Boolean) : [],
+          dates: Array.isArray(c.dates) ? c.dates.map(String).filter(Boolean) : [],
+          hedgingLevel,
+          evidenceSnippet:
+            typeof c.evidenceSnippet === 'string' && c.evidenceSnippet.trim()
+              ? c.evidenceSnippet.trim().slice(0, 350)
+              : null,
+        };
+      });
+
+    return {
+      claims,
+      usage: {
+        provider: this.providerId,
+        modelVersion: this.modelVersion,
+        inputTokens,
+        outputTokens,
+        costUsd,
+      },
+    };
+  }
+
+  async compareClaims(input: ClaimDiffJudgeInput): Promise<ClaimDiffJudgeResult> {
+    const prompt = buildClaimDiffPrompt({
+      cardHeadline: input.extraction.headline,
+      cardStatement: input.extraction.attributedStatement,
+      cardSpeaker: input.extraction.quotedSpeaker,
+      cardNumbers: input.extraction.claimedNumbers,
+      cardDates: input.extraction.claimedDates,
+      cardOcrText: input.extraction.ocrText,
+      articleOutlet: input.article.outlet,
+      articleTitle: input.article.title,
+      articlePublishedAt: input.article.publishedAt,
+      articleSnippet: input.article.snippet,
+      articleClaims: input.articleClaims.map((c) => ({
+        claimText: c.claimText,
+        speakerName: c.speakerName ?? null,
+        numbers: c.numbers,
+        dates: c.dates,
+        hedgingLevel: c.hedgingLevel,
+        evidenceSnippet: c.evidenceSnippet,
+      })),
+    });
+
+    const { parsed, inputTokens, outputTokens, costUsd } = await this.generateStructuredJson(
+      [{ text: prompt }],
+      CLAIM_DIFF_RESPONSE_SCHEMA as unknown as Record<string, unknown>,
+      0.0
+    );
+
+    const obj = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as {
+      diffs?: unknown[];
+      summaryEn?: string;
+      summaryBn?: string;
+    };
+
+    const diffs: ClaimDiffItem[] = [];
+    for (const raw of obj.diffs ?? []) {
+      const check = ClaimDiffItemSchema.safeParse({
+        ...(typeof raw === 'object' && raw !== null ? raw : {}),
+        deterministic: false,
+      });
+      if (check.success) diffs.push(check.data);
+    }
+
+    const summary =
+      typeof obj.summaryEn === 'string' && obj.summaryEn.trim()
+        ? {
+            en: obj.summaryEn.trim().slice(0, 260),
+            bn:
+              typeof obj.summaryBn === 'string' && obj.summaryBn.trim()
+                ? obj.summaryBn.trim().slice(0, 260)
+                : obj.summaryEn.trim().slice(0, 260),
+          }
+        : null;
+
+    return {
+      diffs: diffs.slice(0, 5),
+      summary,
       usage: {
         provider: this.providerId,
         modelVersion: this.modelVersion,

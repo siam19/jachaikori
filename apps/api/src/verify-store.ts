@@ -39,22 +39,26 @@ interface StoredResultsPayload {
   resolvedEntities?: ResolvedCardEntity[];
   queryTerms?: string[];
   sources?: VerificationSourceMatch[];
+  overallDiffStatus?: VerificationCheck['overallDiffStatus'];
+  overallDiffSummary?: VerificationCheck['overallDiffSummary'];
   emptyStateNotice?: VerificationCheck['emptyStateNotice'];
 }
 
 function hydrateCheckRow(row: RawCheckRow): VerificationCheck {
   const extraction = JSON.parse(row.extractedClaimJson) as CardExtraction;
   const res = JSON.parse(row.resultsJson) as StoredResultsPayload;
-  const stageTimingsMs: StageTimings = row.stageTimingsJson
-    ? (JSON.parse(row.stageTimingsJson) as StageTimings)
-    : {
-        cacheLookupMs: 0,
-        extractMs: 0,
-        entityResolveMs: 0,
-        retrievalMs: 0,
-        rerankMs: 0,
-        persistMs: 0,
-      };
+  const rawTimings = row.stageTimingsJson
+    ? (JSON.parse(row.stageTimingsJson) as Partial<StageTimings>)
+    : {};
+  const stageTimingsMs: StageTimings = {
+    cacheLookupMs: Number(rawTimings.cacheLookupMs ?? 0),
+    extractMs: Number(rawTimings.extractMs ?? 0),
+    entityResolveMs: Number(rawTimings.entityResolveMs ?? 0),
+    retrievalMs: Number(rawTimings.retrievalMs ?? 0),
+    rerankMs: Number(rawTimings.rerankMs ?? 0),
+    diffMs: Number(rawTimings.diffMs ?? 0),
+    persistMs: Number(rawTimings.persistMs ?? 0),
+  };
 
   return {
     id: row.id,
@@ -72,6 +76,8 @@ function hydrateCheckRow(row: RawCheckRow): VerificationCheck {
     resolvedEntities: res.resolvedEntities ?? [],
     queryTerms: res.queryTerms ?? [],
     sources: res.sources ?? [],
+    overallDiffStatus: res.overallDiffStatus ?? null,
+    overallDiffSummary: res.overallDiffSummary ?? null,
     emptyStateNotice: res.emptyStateNotice ?? null,
     hitCount: Number(row.hitCount ?? 1),
     latencyMs: Number(row.latencyMs ?? 0),
@@ -183,6 +189,8 @@ export class D1VerificationCheckStore implements VerificationCheckStore {
       resolvedEntities: check.resolvedEntities,
       queryTerms: check.queryTerms,
       sources: check.sources,
+      overallDiffStatus: check.overallDiffStatus ?? null,
+      overallDiffSummary: check.overallDiffSummary ?? null,
       emptyStateNotice: check.emptyStateNotice,
     };
 

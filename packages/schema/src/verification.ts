@@ -81,6 +81,55 @@ export const ClaimDiffFlagSchema = z.enum([
 ]);
 export type ClaimDiffFlag = z.infer<typeof ClaimDiffFlagSchema>;
 
+export const ClaimDiffSeveritySchema = z.enum(['info', 'notable', 'major']);
+export type ClaimDiffSeverity = z.infer<typeof ClaimDiffSeveritySchema>;
+
+export const ClaimDiffItemSchema = z.object({
+  flag: ClaimDiffFlagSchema,
+  severity: ClaimDiffSeveritySchema.default('notable'),
+  deterministic: z.boolean().default(false),
+  cardSpan: z.string().nullable().default(null),
+  articleSpan: z.string().nullable().default(null),
+  explanationEn: z.string(),
+  explanationBn: z.string(),
+  confidence: z.number().min(0).max(1).default(0.85),
+});
+export type ClaimDiffItem = z.infer<typeof ClaimDiffItemSchema>;
+
+export const OverallDiffStatusSchema = z.enum([
+  'aligned',
+  'minor_differences',
+  'significant_differences',
+  'insufficient_claims',
+]);
+export type OverallDiffStatus = z.infer<typeof OverallDiffStatusSchema>;
+
+export const StoredArticleClaimSchema = z.object({
+  id: z.string(),
+  articleId: z.string(),
+  claimText: z.string(),
+  claimType: z.string().default('factual'),
+  speakerEntityId: z.string().nullable().default(null),
+  speakerName: z.string().nullable().optional(),
+  subjectEntityId: z.string().nullable().default(null),
+  subjectName: z.string().nullable().optional(),
+  objectEntityId: z.string().nullable().default(null),
+  objectName: z.string().nullable().optional(),
+  numbers: z.array(z.string()).default([]),
+  dates: z.array(z.string()).default([]),
+  hedgingLevel: z.enum(['certain', 'reported', 'hedged', 'conditional']).default('reported'),
+  evidenceSnippet: z.string().nullable().default(null),
+  confidence: z.number().min(0).max(1).default(0.85),
+  extractorVersion: z.string().default('v2'),
+});
+export type StoredArticleClaim = z.infer<typeof StoredArticleClaimSchema>;
+
+export const EmptyStateNoticeSchema = z.object({
+  en: z.string(),
+  bn: z.string(),
+});
+export type EmptyStateNotice = z.infer<typeof EmptyStateNoticeSchema>;
+
 export const VerificationSourceMatchSchema = z.object({
   articleId: z.string(),
   chunkId: z.string().nullable().optional(),
@@ -96,14 +145,11 @@ export const VerificationSourceMatchSchema = z.object({
   matchSummary: z.string().nullable().default(null).describe('Brief neutral explanation of how this article relates to the claim'),
   matchedEntityIds: z.array(z.string()).default([]),
   diffFlags: z.array(ClaimDiffFlagSchema).optional(),
+  diffs: z.array(ClaimDiffItemSchema).optional(),
+  diffSummary: EmptyStateNoticeSchema.nullable().optional(),
+  articleClaimsCount: z.number().int().min(0).optional(),
 });
 export type VerificationSourceMatch = z.infer<typeof VerificationSourceMatchSchema>;
-
-export const EmptyStateNoticeSchema = z.object({
-  en: z.string(),
-  bn: z.string(),
-});
-export type EmptyStateNotice = z.infer<typeof EmptyStateNoticeSchema>;
 
 export const StageTimingsSchema = z.object({
   cacheLookupMs: z.number().min(0).default(0),
@@ -111,6 +157,7 @@ export const StageTimingsSchema = z.object({
   entityResolveMs: z.number().min(0).default(0),
   retrievalMs: z.number().min(0).default(0),
   rerankMs: z.number().min(0).default(0),
+  diffMs: z.number().min(0).default(0),
   persistMs: z.number().min(0).default(0),
 });
 export type StageTimings = z.infer<typeof StageTimingsSchema>;
@@ -131,6 +178,8 @@ export const VerificationCheckSchema = z.object({
   resolvedEntities: z.array(ResolvedCardEntitySchema).default([]),
   queryTerms: z.array(z.string()).default([]),
   sources: z.array(VerificationSourceMatchSchema).default([]),
+  overallDiffStatus: OverallDiffStatusSchema.nullable().optional(),
+  overallDiffSummary: EmptyStateNoticeSchema.nullable().optional(),
   emptyStateNotice: EmptyStateNoticeSchema.nullable().default(null),
   hitCount: z.number().int().min(1).default(1),
   latencyMs: z.number().int().min(0),

@@ -8,16 +8,27 @@
  * for photo-card OCR/extraction and `@cf/baai/bge-reranker-base` (with LLM fallback) for reranking.
  */
 
-import type { CardExtraction } from '@jachaikori/schema';
+import {
+  ClaimDiffItemSchema,
+  type CardExtraction,
+  type ClaimDiffItem,
+} from '@jachaikori/schema';
 import { bytesToBase64, type SupportedImageMime } from '../image-hash';
 import {
+  buildArticleClaimsPrompt,
+  buildClaimDiffPrompt,
   buildImageExtractionPrompt,
   buildRerankPrompt,
   buildTextExtractionPrompt,
 } from '../prompts';
 import { extractJsonObject, parseCardExtraction } from './json-utils';
 import type {
+  ArticleClaimExtractInput,
+  ArticleClaimExtractResult,
   CandidateReranker,
+  ClaimDiffJudge,
+  ClaimDiffJudgeInput,
+  ClaimDiffJudgeResult,
   RerankCandidateInput,
   RerankCandidateScore,
   RerankResult,
@@ -51,7 +62,7 @@ function extractResponseText(raw: unknown): string {
   return JSON.stringify(raw);
 }
 
-export class WorkersAiAdapter implements VlmExtractor, CandidateReranker {
+export class WorkersAiAdapter implements VlmExtractor, CandidateReranker, ClaimDiffJudge {
   readonly providerId = 'workers-ai' as const;
   readonly modelVersion: string;
   private readonly visionModel: string;
@@ -282,6 +293,128 @@ export class WorkersAiAdapter implements VlmExtractor, CandidateReranker {
             matchSummary: null,
           }
       ),
+      usage: {
+        provider: this.providerId,
+        modelVersion: this.textModel,
+        inputTokens: Math.ceil(prompt.length / 4),
+        outputTokens: Math.ceil(text.length / 4),
+        costUsd: EST_TEXT_USD_PER_CALL,
+      },
+    };
+  }
+
+  async extractArticleClaims(input: ArticleClaimExtractInput): Promise<ArticleClaimExtractResult> {
+    const prompt = buildArticleClaimsPrompt({
+      outlet: input.outlet,
+      publishedAt: input.publishedAt,
+      title: input.title,
+      text: input.text,
+    });
+    const rawResult = await this.runModel(this.textModel, {
+      messages: [
+        { role: 'system', content: 'Return ONLY valid JSON.' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 900,
+      temperature: 0.0,
+    });
+    const text = extractResponseText(rawResult);
+    const parsed = extractJsonObject(text) as { claims?: any[] };
+    const claims = (parsed?.claims ?? [])
+      .filter((c) => c && typeof c.claimText === 'string' && c.claimText.trim())
+      .slice(0, 6)
+      .map((c) => {
+        const hl = String(c.hedgingLevel ?? 'reported');
+        const hedgingLevel: 'certain' | 'reported' | 'hedged' | 'conditional' =
+          hl === 'certain' || hl === 'reported' || hl === 'hedged' || hl === 'conditional'
+            ? hl
+            : 'reported';
+        return {
+          claimText: String(c.claimText).trim(),
+          claimType: typeof c.claimType === 'string' && c.claimType.trim() ? c.claimType.trim() : 'factual',
+          speakerName: typeof c.speakerName === 'string' && c.speakerName.trim() ? c.speakerName.trim() : null,
+          subjectName: typeof c.subjectName === 'string' && c.subjectName.trim() ? c.subjectName.trim() : null,
+          objectName: typeof c.objectName === 'string' && c.objectName.trim() ? c.objectName.trim() : null,
+          numbers: Array.isArray(c.numbers) ? c.numbers.map(String).filter(Boolean) : [],
+          dates: Array.isArray(c.dates) ? c.dates.map(String).filter(Boolean) : [],
+          hedgingLevel,
+          evidenceSnippet:
+            typeof c.evidenceSnippet === 'string' && c.evidenceSnippet.trim()
+              ? c.evidenceSnippet.trim().slice(0, 350)
+              : null,
+        };
+      });
+
+    return {
+      claims,
+      usage: {
+        provider: this.providerId,
+        modelVersion: this.textModel,
+        inputTokens: Math.ceil(prompt.length / 4),
+        outputTokens: Math.ceil(text.length / 4),
+        costUsd: EST_TEXT_USD_PER_CALL,
+      },
+    };
+  }
+
+  async compareClaims(input: ClaimDiffJudgeInput): Promise<ClaimDiffJudgeResult> {
+    const prompt = buildClaimDiffPrompt({
+      cardHeadline: input.extraction.headline,
+      cardStatement: input.extraction.attributedStatement,
+      cardSpeaker: input.extraction.quotedSpeaker,
+      cardNumbers: input.extraction.claimedNumbers,
+      cardDates: input.extraction.claimedDates,
+      cardOcrText: input.extraction.ocrText,
+      articleOutlet: input.article.outlet,
+      articleTitle: input.article.title,
+      articlePublishedAt: input.article.publishedAt,
+      articleSnippet: input.article.snippet,
+      articleClaims: input.articleClaims.map((c) => ({
+        claimText: c.claimText,
+        speakerName: c.speakerName ?? null,
+        numbers: c.numbers,
+        dates: c.dates,
+        hedgingLevel: c.hedgingLevel,
+        evidenceSnippet: c.evidenceSnippet,
+      })),
+    });
+    const rawResult = await this.runModel(this.textModel, {
+      messages: [
+        { role: 'system', content: 'Return ONLY valid JSON.' },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: 900,
+      temperature: 0.0,
+    });
+    const text = extractResponseText(rawResult);
+    const parsed = extractJsonObject(text) as {
+      diffs?: unknown[];
+      summaryEn?: string;
+      summaryBn?: string;
+    };
+    const diffs: ClaimDiffItem[] = [];
+    for (const raw of parsed?.diffs ?? []) {
+      const check = ClaimDiffItemSchema.safeParse({
+        ...(typeof raw === 'object' && raw !== null ? raw : {}),
+        deterministic: false,
+      });
+      if (check.success) diffs.push(check.data);
+    }
+
+    const summary =
+      typeof parsed?.summaryEn === 'string' && parsed.summaryEn.trim()
+        ? {
+            en: parsed.summaryEn.trim().slice(0, 260),
+            bn:
+              typeof parsed.summaryBn === 'string' && parsed.summaryBn.trim()
+                ? parsed.summaryBn.trim().slice(0, 260)
+                : parsed.summaryEn.trim().slice(0, 260),
+          }
+        : null;
+
+    return {
+      diffs: diffs.slice(0, 5),
+      summary,
       usage: {
         provider: this.providerId,
         modelVersion: this.textModel,

@@ -35,10 +35,12 @@ import {
 } from './prompts';
 import type {
   CandidateReranker,
+  ClaimDiffJudge,
   RerankCandidateInput,
   RerankCandidateScore,
   VlmExtractor,
 } from './providers/types';
+import { runClaimDiffEngine, type ArticleClaimStore } from './diff/engine';
 import { buildVerificationQueries } from './query-builder';
 
 export const DEFAULT_MIN_MATCH_SCORE = 0.42;
@@ -88,15 +90,18 @@ export interface VerificationRetriever {
 export interface VerificationPipelineDeps {
   extractor: VlmExtractor;
   reranker: CandidateReranker;
+  diffJudge?: ClaimDiffJudge;
   compiledRegistry: CompiledRegistry;
   expander: AliasDictionaryExpander;
   retriever: VerificationRetriever;
   checkStore: VerificationCheckStore;
+  claimStore?: ArticleClaimStore;
   vlmCache?: VlmResponseCache;
   imageStore?: VerificationImageStore;
   minMatchScore?: number;
   maxSources?: number;
   maxHammingDistance?: number;
+  enableClaimDiff?: boolean;
   pipelineVersion?: string;
   now?: () => Date;
 }
@@ -143,6 +148,7 @@ export async function runVerificationPipeline(
     entityResolveMs: 0,
     retrievalMs: 0,
     rerankMs: 0,
+    diffMs: 0,
     persistMs: 0,
   };
 
@@ -428,6 +434,32 @@ export async function runVerificationPipeline(
   const status: VerificationCheck['status'] = sources.length > 0 ? 'matched' : 'no_coverage';
   const emptyStateNotice = status === 'no_coverage' ? NEUTRAL_EMPTY_STATE_NOTICE : null;
 
+  // 7b. Sprint 7 Claim-Level Diff & Distortion Engine on matched sources
+  let finalSources = sources;
+  let overallDiffStatus: VerificationCheck['overallDiffStatus'] = null;
+  let overallDiffSummary: VerificationCheck['overallDiffSummary'] = null;
+
+  if (status === 'matched' && deps.enableClaimDiff !== false) {
+    const diffStart = performance.now();
+    const diffRes = await runClaimDiffEngine({
+      extraction,
+      sources,
+      compiledRegistry: deps.compiledRegistry,
+      referenceDateIso: queryPlan.referenceDate,
+      nowIso,
+      diffJudge: deps.diffJudge,
+      claimStore: deps.claimStore,
+      vlmCache: deps.vlmCache,
+      inputHash,
+      bypassCache: input.bypassCache,
+    });
+    finalSources = diffRes.sources;
+    overallDiffStatus = diffRes.overallDiffStatus;
+    overallDiffSummary = diffRes.overallDiffSummary;
+    totalCostUsd += diffRes.extraCostUsd;
+    timings.diffMs = Math.round(performance.now() - diffStart);
+  }
+
   // 8. Persist uploaded image + check record
   const persistStart = performance.now();
   if (validatedImg && r2Key && deps.imageStore) {
@@ -449,7 +481,9 @@ export async function runVerificationPipeline(
     extraction,
     resolvedEntities: queryPlan.resolvedEntities,
     queryTerms: queryPlan.queryTerms,
-    sources,
+    sources: finalSources,
+    overallDiffStatus,
+    overallDiffSummary,
     emptyStateNotice,
     hitCount: 1,
     latencyMs: Math.round(performance.now() - totalStart),

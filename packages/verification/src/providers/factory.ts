@@ -9,7 +9,12 @@ import type { SupportedImageMime } from '../image-hash';
 import { GeminiFlashAdapter } from './gemini';
 import { HeuristicVerificationAdapter } from './heuristic';
 import type {
+  ArticleClaimExtractInput,
+  ArticleClaimExtractResult,
   CandidateReranker,
+  ClaimDiffJudge,
+  ClaimDiffJudgeInput,
+  ClaimDiffJudgeResult,
   RerankCandidateInput,
   RerankResult,
   VerificationProviderConfig,
@@ -77,9 +82,44 @@ class FallbackCandidateReranker implements CandidateReranker {
   }
 }
 
+class FallbackClaimDiffJudge implements ClaimDiffJudge {
+  readonly providerId: VlmProviderId;
+  readonly modelVersion: string;
+
+  constructor(private readonly chain: ClaimDiffJudge[]) {
+    this.providerId = chain[0]!.providerId;
+    this.modelVersion = chain[0]!.modelVersion;
+  }
+
+  async extractArticleClaims(input: ArticleClaimExtractInput): Promise<ArticleClaimExtractResult> {
+    let lastError: unknown;
+    for (const provider of this.chain) {
+      try {
+        return await provider.extractArticleClaims(input);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('No claim extractor succeeded.');
+  }
+
+  async compareClaims(input: ClaimDiffJudgeInput): Promise<ClaimDiffJudgeResult> {
+    let lastError: unknown;
+    for (const provider of this.chain) {
+      try {
+        return await provider.compareClaims(input);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('No diff judge succeeded.');
+  }
+}
+
 export function createVerificationProviders(config: VerificationProviderConfig): {
   extractor: VlmExtractor;
   reranker: CandidateReranker;
+  diffJudge: ClaimDiffJudge;
   activeProviders: VlmProviderId[];
 } {
   const preference = config.preference ?? 'auto';
@@ -98,7 +138,7 @@ export function createVerificationProviders(config: VerificationProviderConfig):
   const workersAi = hasWorkersAi ? new WorkersAiAdapter(config.workersAi!) : null;
   const heuristic = new HeuristicVerificationAdapter();
 
-  const chain: Array<VlmExtractor & CandidateReranker> = [];
+  const chain: Array<VlmExtractor & CandidateReranker & ClaimDiffJudge> = [];
   if (preference === 'gemini') {
     if (gemini) chain.push(gemini);
     if (workersAi) chain.push(workersAi);
@@ -115,6 +155,7 @@ export function createVerificationProviders(config: VerificationProviderConfig):
   return {
     extractor: chain.length === 1 ? chain[0]! : new FallbackVlmExtractor(chain),
     reranker: chain.length === 1 ? chain[0]! : new FallbackCandidateReranker(chain),
+    diffJudge: chain.length === 1 ? chain[0]! : new FallbackClaimDiffJudge(chain),
     activeProviders: chain.map((p) => p.providerId),
   };
 }

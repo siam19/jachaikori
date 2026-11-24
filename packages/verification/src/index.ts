@@ -15,3 +15,8 @@ export * from './providers/gemini';
 export * from './providers/workers-ai';
 export * from './providers/heuristic';
 export * from './providers/factory';
+export * from './diff/numbers';
+export * from './diff/dates';
+export * from './diff/speaker';
+export * from './diff/engine';
+export * from './diff/cross-outlet';

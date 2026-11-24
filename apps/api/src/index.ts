@@ -20,12 +20,14 @@ import {
   type CompiledRegistry,
 } from '@jachaikori/entities';
 import {
+  analyzeCrossOutletDifferences,
   base64ToBytes,
   createVerificationProviders,
   MAX_IMAGE_BYTES,
   runVerificationPipeline,
   SqlVlmCache,
   type CandidateReranker,
+  type ClaimDiffJudge,
   type VerificationImageStore,
   type VerificationPipelineInput,
   type VerificationRetriever,
@@ -48,6 +50,8 @@ import {
   type EntitySummary,
   type EntityType,
   type EventCluster,
+  type EventComparisonResponse,
+  type EventOutletCoverageItem,
   type GraphEdge,
   type GraphNode,
   type OutletId,
@@ -55,6 +59,7 @@ import {
   type RoleTerm,
   type VlmProviderPreference,
 } from '@jachaikori/schema';
+import { D1ArticleClaimStore } from './claim-store';
 import { D1VerificationCheckStore } from './verify-store';
 
 export interface LocalImageStoreAdapter {
@@ -81,6 +86,7 @@ export interface ApiEnv {
   WORKERS_AI_RERANKER_MODEL?: string;
   VERIFY_EXTRACTOR?: VlmExtractor;
   VERIFY_RERANKER?: CandidateReranker;
+  VERIFY_DIFF_JUDGE?: ClaimDiffJudge;
   LOCAL_SEMANTIC_SEARCH?: (queryText: string, limit: number) => Promise<RankedChunkCandidate[]>;
   LOCAL_IMAGE_STORE?: LocalImageStoreAdapter;
 }
@@ -2359,28 +2365,25 @@ async function handleVerify(request: Request, env: ApiEnv): Promise<Response> {
 
   const cached = await getCachedRegistry(env.DB);
   const preference = parseProviderPreference(providerOverride ?? env.VLM_PROVIDER);
-  const providers =
-    env.VERIFY_EXTRACTOR && env.VERIFY_RERANKER
-      ? { extractor: env.VERIFY_EXTRACTOR, reranker: env.VERIFY_RERANKER }
-      : createVerificationProviders({
-          preference,
-          gemini: {
-            apiKey: env.GEMINI_API_KEY,
-            vertexProjectId: env.GCP_PROJECT_ID,
-            vertexLocation: env.GCP_LOCATION ?? 'global',
-            vertexAccessToken: env.GCP_ACCESS_TOKEN,
-            getVertexAccessToken: env.GET_GCP_ACCESS_TOKEN,
-            model: env.GEMINI_MODEL ?? (env.GCP_PROJECT_ID ? 'gemini-3.5-flash' : 'gemini-2.5-flash'),
-          },
-          workersAi: {
-            aiBinding: env.AI ? { run: (m, i) => (env.AI as any).run(m, i) } : undefined,
-            accountId: env.CF_ACCOUNT_ID,
-            apiToken: env.CF_API_TOKEN,
-            visionModel: env.WORKERS_AI_VISION_MODEL,
-            textModel: env.WORKERS_AI_TEXT_MODEL,
-            rerankerModel: env.WORKERS_AI_RERANKER_MODEL,
-          },
-        });
+  const createdProviders = createVerificationProviders({
+    preference,
+    gemini: {
+      apiKey: env.GEMINI_API_KEY,
+      vertexProjectId: env.GCP_PROJECT_ID,
+      vertexLocation: env.GCP_LOCATION ?? 'global',
+      vertexAccessToken: env.GCP_ACCESS_TOKEN,
+      getVertexAccessToken: env.GET_GCP_ACCESS_TOKEN,
+      model: env.GEMINI_MODEL ?? (env.GCP_PROJECT_ID ? 'gemini-3.5-flash' : 'gemini-2.5-flash'),
+    },
+    workersAi: {
+      aiBinding: env.AI ? { run: (m, i) => (env.AI as any).run(m, i) } : undefined,
+      accountId: env.CF_ACCOUNT_ID,
+      apiToken: env.CF_API_TOKEN,
+      visionModel: env.WORKERS_AI_VISION_MODEL,
+      textModel: env.WORKERS_AI_TEXT_MODEL,
+      rerankerModel: env.WORKERS_AI_RERANKER_MODEL,
+    },
+  });
 
   const imageStore: VerificationImageStore | undefined = env.CARDS_BUCKET
     ? {
@@ -2427,12 +2430,14 @@ async function handleVerify(request: Request, env: ApiEnv): Promise<Response> {
 
   try {
     const check = await runVerificationPipeline(pipelineInput, {
-      extractor: env.VERIFY_EXTRACTOR ?? providers.extractor,
-      reranker: env.VERIFY_RERANKER ?? providers.reranker,
+      extractor: env.VERIFY_EXTRACTOR ?? createdProviders.extractor,
+      reranker: env.VERIFY_RERANKER ?? createdProviders.reranker,
+      diffJudge: env.VERIFY_DIFF_JUDGE ?? createdProviders.diffJudge,
       compiledRegistry: cached.compiled,
       expander: cached.expander,
       retriever,
       checkStore: new D1VerificationCheckStore(env.DB),
+      claimStore: new D1ArticleClaimStore(env.DB),
       vlmCache: new SqlVlmCache(env.DB),
       imageStore,
     });
@@ -2500,6 +2505,177 @@ async function handleGetCheckImage(checkId: string, env: ApiEnv): Promise<Respon
   }
 
   return json({ error: 'Image storage not configured' }, 404);
+}
+
+const INDEXED_ACCREDITED_OUTLETS: OutletId[] = [
+  'prothom-alo',
+  'daily-star',
+  'business-standard',
+  'bdnews24',
+  'ittefaq',
+  'jugantor',
+  'kaler-kantho',
+  'bangladesh-protidin',
+];
+
+async function handleEventComparison(rawEventId: string, env: ApiEnv): Promise<Response> {
+  const redirect = await env.DB.prepare('SELECT new_id as newId FROM event_redirect WHERE old_id = ?')
+    .bind(rawEventId)
+    .first<{ newId: string }>()
+    .catch(() => null);
+  const eventId = redirect?.newId ?? rawEventId;
+
+  const eventRow = await env.DB.prepare(
+    `SELECT id, label, lead_snippet as leadSnippet,
+            first_seen as firstSeen, last_seen as lastSeen,
+            article_count as articleCount, outlet_count as outletCount,
+            outlets_json as outletsJson
+     FROM event_cluster WHERE id = ?`
+  )
+    .bind(eventId)
+    .first<any>();
+
+  if (!eventRow) {
+    return json({ error: 'Event not found' }, 404);
+  }
+
+  const artRows = await env.DB.prepare(
+    `SELECT a.id, a.outlet, a.title, a.lead, a.canonical_url as canonicalUrl, a.published_at as publishedAt
+     FROM article_cluster ac
+     JOIN article a ON a.id = ac.article_id
+     WHERE ac.cluster_id = ?
+     ORDER BY CASE WHEN a.published_at IS NULL THEN 1 ELSE 0 END, a.published_at ASC`
+  )
+    .bind(eventId)
+    .all<{
+      id: string;
+      outlet: OutletId;
+      title: string;
+      lead: string | null;
+      canonicalUrl: string;
+      publishedAt: string | null;
+    }>();
+
+  // Sort chronologically by true UTC epoch ms (outlets mix +00:00 and +06:00 ISO offsets!)
+  const articles = (artRows.results ?? []).slice().sort((a, b) => {
+    const ma = a.publishedAt ? Date.parse(a.publishedAt) : Number.POSITIVE_INFINITY;
+    const mb = b.publishedAt ? Date.parse(b.publishedAt) : Number.POSITIVE_INFINITY;
+    const va = Number.isNaN(ma) ? Number.POSITIVE_INFINITY : ma;
+    const vb = Number.isNaN(mb) ? Number.POSITIVE_INFINITY : mb;
+    return va - vb;
+  });
+  const firstDated = articles.find((a) => a.publishedAt && !Number.isNaN(Date.parse(a.publishedAt))) ?? null;
+  const firstMs = firstDated?.publishedAt ? Date.parse(firstDated.publishedAt) : null;
+
+  const timeline = articles.map((a) => {
+    const ms = a.publishedAt ? Date.parse(a.publishedAt) : NaN;
+    const lagMinutesFromFirst =
+      firstMs !== null && !Number.isNaN(ms) ? Math.max(0, Math.round((ms - firstMs) / 60_000)) : null;
+    return {
+      articleId: a.id,
+      outlet: a.outlet,
+      title: a.title,
+      publishedAt: a.publishedAt ?? null,
+      lagMinutesFromFirst,
+      canonicalUrl: a.canonicalUrl,
+    };
+  });
+
+  const claimStore = new D1ArticleClaimStore(env.DB);
+  const claimsByArticle = await claimStore.getByArticleIds(articles.map((a) => a.id));
+
+  let totalClaimsAnalyzed = 0;
+  for (const list of claimsByArticle.values()) totalClaimsAnalyzed += list.length;
+
+  const articlesByOutlet = new Map<OutletId, typeof articles>();
+  for (const a of articles) {
+    const list = articlesByOutlet.get(a.outlet) ?? [];
+    list.push(a);
+    articlesByOutlet.set(a.outlet, list);
+  }
+
+  const outletCoverage: EventOutletCoverageItem[] = INDEXED_ACCREDITED_OUTLETS.map((outlet) => {
+    const list = articlesByOutlet.get(outlet) ?? [];
+    const lead = list[0] ?? null;
+    const firstPub = lead?.publishedAt ?? null;
+    const ms = firstPub ? Date.parse(firstPub) : NaN;
+    const lag =
+      firstMs !== null && !Number.isNaN(ms) ? Math.max(0, Math.round((ms - firstMs) / 60_000)) : null;
+    const claims = list.flatMap((a) => claimsByArticle.get(a.id) ?? []);
+    return {
+      outlet,
+      covered: list.length > 0,
+      articleCount: list.length,
+      firstPublishedAt: firstPub,
+      lagMinutesFromFirst: lag,
+      leadArticle: lead
+        ? {
+            id: lead.id,
+            title: lead.title,
+            canonicalUrl: lead.canonicalUrl,
+            publishedAt: lead.publishedAt,
+            lead: lead.lead ?? null,
+          }
+        : null,
+      claims,
+    };
+  });
+
+  const crossOutletDifferences = analyzeCrossOutletDifferences(
+    outletCoverage
+      .filter((o) => o.covered && o.leadArticle)
+      .map((o) => ({
+        outlet: o.outlet,
+        articleId: o.leadArticle!.id,
+        title: o.leadArticle!.title,
+        claims: o.claims,
+      }))
+  );
+
+  const payload: EventComparisonResponse = {
+    event: {
+      id: eventRow.id,
+      label: eventRow.label,
+      leadSnippet: eventRow.leadSnippet ?? null,
+      firstSeen: eventRow.firstSeen ?? null,
+      lastSeen: eventRow.lastSeen ?? null,
+      articleCount: eventRow.articleCount,
+      outletCount: eventRow.outletCount,
+      outlets: JSON.parse(eventRow.outletsJson || '[]'),
+      ...(redirect ? { redirectedFrom: rawEventId } : {}),
+    },
+    firstToPublish: firstDated
+      ? {
+          outlet: firstDated.outlet,
+          articleId: firstDated.id,
+          title: firstDated.title,
+          publishedAt: firstDated.publishedAt!,
+          canonicalUrl: firstDated.canonicalUrl,
+        }
+      : null,
+    timeline,
+    outletCoverage,
+    crossOutletDifferences,
+    totalClaimsAnalyzed,
+  };
+
+  return json(payload);
+}
+
+async function handleArticleClaims(articleId: string, env: ApiEnv): Promise<Response> {
+  const art = await env.DB.prepare(
+    'SELECT id, outlet, title, canonical_url as canonicalUrl, published_at as publishedAt FROM article WHERE id = ?'
+  )
+    .bind(articleId)
+    .first<any>();
+  if (!art) return json({ error: 'Article not found' }, 404);
+
+  const claimStore = new D1ArticleClaimStore(env.DB);
+  const claimsMap = await claimStore.getByArticleIds([articleId]);
+  return json({
+    article: art,
+    claims: claimsMap.get(articleId) ?? [],
+  });
 }
 
 export async function handleApiRequest(request: Request, env: ApiEnv): Promise<Response> {
@@ -2609,9 +2785,19 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
     return handleListEvents(url, env);
   }
 
+  const eventComparisonMatch = path.match(/^\/events\/([^/]+)\/comparison$/);
+  if (eventComparisonMatch && request.method === 'GET') {
+    return handleEventComparison(decodeURIComponent(eventComparisonMatch[1]!), env);
+  }
+
   const eventGraphMatch = path.match(/^\/events\/([^/]+)\/graph$/);
   if (eventGraphMatch && request.method === 'GET') {
     return handleEventGraph(decodeURIComponent(eventGraphMatch[1]!), url, env);
+  }
+
+  const articleClaimsMatch = path.match(/^\/articles\/([^/]+)\/claims$/);
+  if (articleClaimsMatch && request.method === 'GET') {
+    return handleArticleClaims(decodeURIComponent(articleClaimsMatch[1]!), env);
   }
 
   const articleGraphMatch = path.match(/^\/articles\/([^/]+)\/graph$/);

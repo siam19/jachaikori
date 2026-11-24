@@ -6,9 +6,11 @@
 
 import type { EmptyStateNotice, OutletId } from '@jachaikori/schema';
 
-export const PIPELINE_VERSION = 'verify-v1.0.0';
+export const PIPELINE_VERSION = 'verify-v2.0.0';
 export const EXTRACT_PROMPT_VERSION = 'extract-v1.0.0';
-export const RERANK_PROMPT_VERSION = 'rerank-v1.0.0';
+export const RERANK_PROMPT_VERSION = 'rerank-v1.1.0';
+export const DIFF_PROMPT_VERSION = 'diff-v1.0.0';
+export const ARTICLE_CLAIM_PROMPT_VERSION = 'art-claim-v1.0.0';
 
 export const NEUTRAL_EMPTY_STATE_NOTICE: EmptyStateNotice = {
   en: 'No matching coverage was found across the 8 indexed accredited Bangladeshi outlets. This does not mean the claim is false — it may be breaking news not yet indexed, reported by another outlet, or unverified social-media commentary.',
@@ -150,8 +152,8 @@ export function buildRerankPrompt(params: {
     'You are a neutral news retrieval reranker for Bangladeshi journalism (Bangla & English).',
     'Score each candidate accredited article from 0.0 to 1.0 on whether it covers the SAME specific news event, announcement, quote, or claim as the user card.',
     'SCORING CALIBRATION:',
-    '- 0.85–1.00: Direct coverage of the exact same event, quote, policy, or incident.',
-    '- 0.60–0.84: Closely related coverage of the same ongoing event/story by an accredited outlet (even if a number, date, or phrasing differs slightly!).',
+    '- 0.85–1.00: Direct coverage of the exact same event, quote, policy, or incident — INCLUDING accredited articles that directly address, deny, clarify, or call this exact claim/rumor "গুজব" / baseless (those are critical verification matches!).',
+    '- 0.60–0.84: Closely related coverage of the same ongoing event/story by an accredited outlet (even if a number, date, speaker, or polarity differs!).',
     '- 0.40–0.59: Tangentially related context on the same person/topic, different specific event.',
     '- 0.00–0.39: Unrelated article that merely shares a common entity or keyword.',
     'RULES:',
@@ -164,5 +166,143 @@ export function buildRerankPrompt(params: {
     `CLAIMED_DATES: ${JSON.stringify(params.claimedDates)}`,
     `CANDIDATES: ${JSON.stringify(params.candidates)}`,
     'Return ONLY JSON: { "rankings": [ { "articleId": "...", "relevanceScore": 0.0, "matchSummary": "..." } ] }',
+  ].join('\n');
+}
+
+export const ON_DEMAND_ARTICLE_CLAIMS_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    claims: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          claimText: { type: 'STRING' },
+          claimType: { type: 'STRING' },
+          speakerName: { type: 'STRING', nullable: true },
+          subjectName: { type: 'STRING', nullable: true },
+          objectName: { type: 'STRING', nullable: true },
+          numbers: { type: 'ARRAY', items: { type: 'STRING' } },
+          dates: { type: 'ARRAY', items: { type: 'STRING' } },
+          hedgingLevel: {
+            type: 'STRING',
+            enum: ['certain', 'reported', 'hedged', 'conditional'],
+          },
+          evidenceSnippet: { type: 'STRING' },
+        },
+        required: ['claimText', 'hedgingLevel', 'evidenceSnippet'],
+      },
+    },
+  },
+  required: ['claims'],
+} as const;
+
+export const CLAIM_DIFF_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    diffs: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          flag: {
+            type: 'STRING',
+            enum: [
+              'match',
+              'mismatch_number',
+              'mismatch_date',
+              'mismatch_speaker',
+              'mismatch_quote',
+              'hedging_shift',
+              'missing_context',
+            ],
+          },
+          severity: { type: 'STRING', enum: ['info', 'notable', 'major'] },
+          cardSpan: { type: 'STRING', nullable: true },
+          articleSpan: { type: 'STRING', nullable: true },
+          explanationEn: { type: 'STRING' },
+          explanationBn: { type: 'STRING' },
+          confidence: { type: 'NUMBER' },
+        },
+        required: ['flag', 'severity', 'explanationEn', 'explanationBn', 'confidence'],
+      },
+    },
+    summaryEn: { type: 'STRING' },
+    summaryBn: { type: 'STRING' },
+  },
+  required: ['diffs', 'summaryEn', 'summaryBn'],
+} as const;
+
+export function buildArticleClaimsPrompt(params: {
+  outlet: string;
+  publishedAt: string | null;
+  title: string;
+  text: string;
+}): string {
+  return [
+    'Extract up to 5 concise, verifiable factual or quoted claims from this accredited Bangladeshi news article.',
+    'RULES:',
+    '- Preserve exact numbers with units in `numbers` (e.g., "৫০০ কোটি টাকা", "$4.7B", "12%").',
+    '- Preserve exact dates in `dates`.',
+    '- Set `hedgingLevel`: "certain" (confirmed fact), "reported" (attributed/alleged), "hedged" (may/likely/সম্ভাব্য), or "conditional".',
+    '- Keep `claimText` and `evidenceSnippet` faithful to the article.',
+    `OUTLET: ${params.outlet} | PUBLISHED_AT: ${params.publishedAt ?? 'unknown'}`,
+    `TITLE: ${params.title}`,
+    `TEXT: ${params.text.slice(0, 2200)}`,
+    'Return ONLY valid JSON: { "claims": [...] }',
+  ].join('\n');
+}
+
+export function buildClaimDiffPrompt(params: {
+  cardHeadline: string | null;
+  cardStatement: string | null;
+  cardSpeaker: string | null;
+  cardNumbers: string[];
+  cardDates: string[];
+  cardOcrText: string;
+  articleOutlet: string;
+  articleTitle: string;
+  articlePublishedAt: string | null;
+  articleSnippet: string;
+  articleClaims: Array<{
+    claimText: string;
+    speakerName: string | null;
+    numbers: string[];
+    dates: string[];
+    hedgingLevel: string;
+    evidenceSnippet: string | null;
+  }>;
+}): string {
+  return [
+    'You are a neutral journalistic claim-comparison engine for Bangladeshi news (Bangla & English).',
+    'Compare the USER_CARD claim strictly against the ACCREDITED_ARTICLE reporting and list concrete alignments or differences.',
+    'STRICT NEUTRALITY RULES:',
+    '- NEVER declare the card "true", "false", or "fake". Only describe how the card compares with what this accredited outlet reported.',
+    '- Look specifically for:',
+    '  * `match`: core claim/quote aligns closely with the accredited article.',
+    '  * `mismatch_number`: figure/amount/percentage differs from what the article reports.',
+    '  * `mismatch_date`: date or timeline differs from the article.',
+    '  * `mismatch_speaker`: quote is attributed to a different person/organization than in the article.',
+    '  * `mismatch_quote`: attributed wording substantially distorts or alters what the speaker actually said.',
+    '  * `hedging_shift`: article uses cautious/reported/conditional framing ("may", "alleged", "সম্ভাব্য", "গুঞ্জন") while the card presents it as settled certainty.',
+    '  * `missing_context`: card omits a crucial denial ("গুজব", "ভিত্তিহীন", "denied"), condition, or clarifying context present in the article.',
+    '- Provide crisp, neutral `explanationEn` (English) and `explanationBn` (Bangla) for each diff item and a 1-sentence overall `summaryEn` / `summaryBn`.',
+    '- Emit at most 4 most salient diff items.',
+    `USER_CARD: ${JSON.stringify({
+      headline: params.cardHeadline,
+      attributedStatement: params.cardStatement,
+      quotedSpeaker: params.cardSpeaker,
+      claimedNumbers: params.cardNumbers,
+      claimedDates: params.cardDates,
+      ocrText: params.cardOcrText.slice(0, 500),
+    })}`,
+    `ACCREDITED_ARTICLE: ${JSON.stringify({
+      outlet: params.articleOutlet,
+      title: params.articleTitle,
+      publishedAt: params.articlePublishedAt,
+      snippet: params.articleSnippet.slice(0, 500),
+      extractedClaims: params.articleClaims.slice(0, 6),
+    })}`,
+    'Return ONLY JSON matching: { "diffs": [...], "summaryEn": "...", "summaryBn": "..." }',
   ].join('\n');
 }
