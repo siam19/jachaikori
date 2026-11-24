@@ -7,7 +7,7 @@
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { abortableSleep, type DomainRateLimiter } from './limiter';
 
-const BLOCKED_RESOURCE_TYPES = new Set(['image', 'media', 'font', 'stylesheet']);
+const BLOCKED_RESOURCE_TYPES = new Set(['media', 'font']);
 const BLOCKED_DOMAINS = [
   'google-analytics.com',
   'googletagmanager.com',
@@ -20,6 +20,21 @@ interface PersistentSession {
   context: BrowserContext;
   page: Page;
   navCount: number;
+  warmedOrigins: Set<string>;
+}
+
+function isPassiveJsChallenge(html: string): boolean {
+  if (html.length > 120_000) return false;
+  if (html.includes('challenges.cloudflare.com/turnstile') || html.includes('Verify you are human')) {
+    return false;
+  }
+  return (
+    html.includes('<title>Just a moment...</title>') ||
+    html.includes('id="cf-browser-verification"') ||
+    html.includes('class="cf-browser-verification"') ||
+    html.includes('id="challenge-form"') ||
+    html.includes('Enable JavaScript and cookies to continue')
+  );
 }
 
 export class BrowserPool {
@@ -116,7 +131,7 @@ export class BrowserPool {
     }
 
     const { context, page } = await this.createPolitePage();
-    const session: PersistentSession = { context, page, navCount: 0 };
+    const session: PersistentSession = { context, page, navCount: 0, warmedOrigins: new Set() };
     this.sessions.set(sessionKey, session);
     return session;
   }
@@ -145,7 +160,7 @@ export class BrowserPool {
       timeoutMs?: number;
       maxNavsBeforeRecycle?: number;
     }
-  ): Promise<{ html: string; status: number }> {
+  ): Promise<{ html: string; status: number; serverHeader?: string }> {
     const signal = options?.signal;
     if (signal?.aborted) {
       throw signal.reason ?? new DOMException('Aborted', 'AbortError');
@@ -153,6 +168,7 @@ export class BrowserPool {
 
     const parsedUrl = new URL(url);
     const domain = parsedUrl.hostname;
+    const origin = parsedUrl.origin;
 
     if (options?.limiter) {
       await options.limiter.acquire(domain, signal);
@@ -161,14 +177,37 @@ export class BrowserPool {
     const session = await this.getOrCreateSession(sessionKey, options?.maxNavsBeforeRecycle ?? 150);
 
     try {
+      // Warm homepage once per persistent browser session so origin/clearance cookies settle cleanly
+      // (skip when maxNavsBeforeRecycle === 1, e.g. kaler-kantho, to avoid setting sticky WAF cookies)
+      const shouldWarm = (options?.maxNavsBeforeRecycle ?? 150) > 1;
+      if (shouldWarm && !session.warmedOrigins.has(origin)) {
+        session.warmedOrigins.add(origin);
+        try {
+          await session.page.goto(`${origin}/`, {
+            waitUntil: 'domcontentloaded',
+            timeout: Math.min(18_000, options?.timeoutMs ?? 25_000),
+          });
+          const warmHtml = await session.page.content();
+          if (isPassiveJsChallenge(warmHtml) && !signal?.aborted) {
+            await abortableSleep(4_000, signal);
+          }
+        } catch {
+          // Non-fatal; proceed directly to target article URL
+        }
+        if (options?.limiter) {
+          await options.limiter.acquire(domain, signal);
+        }
+      }
+
       const response = await session.page.goto(url, {
         waitUntil: 'domcontentloaded',
         timeout: options?.timeoutMs ?? 25_000,
-        referer: `${parsedUrl.origin}/`,
+        referer: `${origin}/`,
       });
 
       session.navCount++;
       let status = response?.status() ?? 200;
+      const serverHeader = response?.headers()['server'];
 
       if (options?.waitForSelector) {
         await session.page
@@ -178,16 +217,13 @@ export class BrowserPool {
 
       let html = await session.page.content();
 
-      // If Cloudflare passive JS check ("Just a moment...") is finishing, give it a brief window once
-      if (
-        (html.includes('<title>Just a moment...</title>') ||
-          html.includes('cf-browser-verification')) &&
-        !signal?.aborted
-      ) {
+      // If Cloudflare passive JS check ("Just a moment...") is auto-redirecting, wait up to 2 short cycles
+      for (let w = 0; w < 2 && isPassiveJsChallenge(html) && !signal?.aborted; w++) {
         await abortableSleep(4_000, signal);
         html = await session.page.content();
-        if (!html.includes('<title>Just a moment...</title>')) {
+        if (!isPassiveJsChallenge(html)) {
           status = 200;
+          break;
         }
       }
 
@@ -197,7 +233,7 @@ export class BrowserPool {
         options?.limiter?.reportFailure(domain, status);
       }
 
-      return { html, status };
+      return { html, status, serverHeader };
     } catch (err: any) {
       if (!signal?.aborted) {
         // Recycle crashed/hung page on unexpected navigation error

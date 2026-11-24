@@ -1,0 +1,15 @@
+.git/
+node_modules/
+**/node_modules/
+data/
+docs/
+apps/
+packages/entities/
+packages/retrieval/
+tools/backfill/
+*.sqlite
+*.sqlite-*
+*.jsonl
+*.bin
+dist/
+.DS_Store

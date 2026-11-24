@@ -6,15 +6,22 @@
 
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { Article, CrawlJob, ListItem, OutletId } from '@jachaikori/schema';
 import type { ExtractedArticle } from '@jachaikori/outlets';
 import { canonicalizeUrl } from './url';
 import { parsePublishedDate } from '../dates/parser';
 
+const DEFAULT_CATALOG_PATH = resolve(import.meta.dir, '../../../../data/catalog.sqlite');
+
 export class CatalogDatabase {
   private db: Database;
 
-  constructor(filePath: string = 'data/catalog.sqlite') {
+  constructor(filePath: string = DEFAULT_CATALOG_PATH) {
+    if (filePath !== ':memory:') {
+      mkdirSync(dirname(filePath), { recursive: true });
+    }
     this.db = new Database(filePath, { create: true });
     this.db.run('PRAGMA journal_mode = WAL;');
     this.db.run('PRAGMA foreign_keys = ON;');
@@ -602,6 +609,132 @@ export class CatalogDatabase {
       )
       .get(id) as any;
     return row ?? null;
+  }
+
+  /**
+   * Returns overall row counts grouped by article status.
+   */
+  getStatusCounts(): Record<string, number> {
+    const rows = this.db
+      .prepare('SELECT status, COUNT(*) as cnt FROM article GROUP BY status')
+      .all() as Array<{ status: string; cnt: number }>;
+    const counts: Record<string, number> = {};
+    for (const r of rows) counts[r.status] = r.cnt;
+    return counts;
+  }
+
+  /**
+   * Returns pending articles eligible for GCP distributed scraping.
+   * Explicitly excludes 'skipped' and 'extracted' articles.
+   */
+  getPendingArticlesForGcpExport(options: { retryFailed?: boolean; outlets?: OutletId[] } = {}): Array<{
+    id: string;
+    outlet: OutletId;
+    canonicalUrl: string;
+    title: string;
+    publishedAt: string | null;
+  }> {
+    const allowedStatuses = options.retryFailed ? "('discovered', 'failed')" : "('discovered')";
+    const outletClause =
+      options.outlets && options.outlets.length > 0
+        ? `AND outlet IN (${options.outlets.map(() => '?').join(', ')})`
+        : '';
+    const sql = `
+      SELECT id, outlet, canonical_url as canonicalUrl, title, published_at as publishedAt
+      FROM article
+      WHERE status IN ${allowedStatuses}
+        ${outletClause}
+      ORDER BY published_at DESC, created_at ASC
+    `;
+    const stmt = this.db.prepare(sql);
+    return (options.outlets && options.outlets.length > 0 ? stmt.all(...options.outlets) : stmt.all()) as Array<{
+      id: string;
+      outlet: OutletId;
+      canonicalUrl: string;
+      title: string;
+      publishedAt: string | null;
+    }>;
+  }
+
+  /**
+   * Imports extracted and failed article results from a GCP scrape run in a single transaction.
+   * Never overwrites rows marked 'skipped' locally, and leaves 'blocked' rows as 'discovered'
+   * so WAF/IP-blocked outlets can be retried cleanly from another IP/locally.
+   */
+  importGcpResults(
+    records: Array<{
+      id: string;
+      status: 'extracted' | 'failed' | 'blocked';
+      title?: string;
+      publishedAtIso?: string | null;
+      publishedAtRaw?: string;
+      byline?: string | null;
+      lead?: string | null;
+      cleanText?: string;
+      errorMessage?: string;
+      scrapedAt?: string;
+    }>
+  ): { extracted: number; failed: number; blockedLeftDiscovered: number; skippedPreserved: number } {
+    const nowIso = new Date().toISOString();
+    const updateExtracted = this.db.prepare(
+      `UPDATE article
+       SET title = COALESCE(NULLIF($title, ''), title),
+           published_at = COALESCE($publishedAtIso, published_at),
+           published_at_raw = COALESCE(NULLIF($publishedAtRaw, ''), published_at_raw),
+           byline = $byline,
+           lead = $lead,
+           clean_text = $cleanText,
+           fetched_at = $fetchedAt,
+           status = 'extracted',
+           last_error = NULL,
+           updated_at = $updatedAt
+       WHERE id = $id AND status != 'skipped'`
+    );
+    const updateFailed = this.db.prepare(
+      `UPDATE article
+       SET status = 'failed',
+           last_error = $lastError,
+           updated_at = $updatedAt
+       WHERE id = $id AND status NOT IN ('skipped', 'extracted')`
+    );
+
+    let extracted = 0;
+    let failed = 0;
+    let blockedLeftDiscovered = 0;
+    let skippedPreserved = 0;
+
+    const tx = this.db.transaction(() => {
+      for (const rec of records) {
+        if (rec.status === 'extracted' && rec.cleanText) {
+          const info = updateExtracted.run({
+            $id: rec.id,
+            $title: (rec.title ?? '').trim(),
+            $publishedAtIso: rec.publishedAtIso ?? null,
+            $publishedAtRaw: (rec.publishedAtRaw ?? '').trim(),
+            $byline: rec.byline ?? null,
+            $lead: rec.lead ?? null,
+            $cleanText: rec.cleanText,
+            $fetchedAt: rec.scrapedAt ?? nowIso,
+            $updatedAt: nowIso,
+          });
+          if (info.changes > 0) extracted++;
+          else skippedPreserved++;
+        } else if (rec.status === 'blocked') {
+          blockedLeftDiscovered++;
+        } else if (rec.status === 'failed') {
+          const info = updateFailed.run({
+            $id: rec.id,
+            $lastError: (rec.errorMessage ?? 'GCP scrape failed').slice(0, 500),
+            $updatedAt: nowIso,
+          });
+          if (info.changes > 0) failed++;
+          else skippedPreserved++;
+        }
+      }
+    });
+
+    tx();
+    return { extracted, failed, blockedLeftDiscovered, skippedPreserved };
   }
 
   /**

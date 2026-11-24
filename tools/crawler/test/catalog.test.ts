@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalizeUrl } from '../src/engine/url';
 import { CatalogDatabase } from '../src/engine/catalog';
@@ -176,6 +177,72 @@ describe('CatalogDatabase (SQLite)', () => {
       ]);
 
       catalog.close();
+    } finally {
+      rmSync(dbPath, { force: true });
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+    }
+  });
+
+  it('excludes skipped rows from GCP export and preserves skipped rows on GCP import', () => {
+    const dbPath = join(tmpdir(), `jachaikori-gcp-test-${Date.now()}.sqlite`);
+    try {
+      const catalog = new CatalogDatabase(dbPath);
+      const keep = catalog.upsertDiscoveredItem('prothom-alo', 'bangladesh', {
+        url: 'https://www.prothomalo.com/bangladesh/keep-1',
+        title: 'Keep Article',
+        publishedAtRaw: '2026-11-10T10:00:00Z',
+      });
+      const skip = catalog.upsertDiscoveredItem('prothom-alo', 'bangladesh', {
+        url: 'https://www.prothomalo.com/bangladesh/skip-2',
+        title: 'Low Signal Article',
+        publishedAtRaw: '2026-11-10T11:00:00Z',
+      });
+      const blocked = catalog.upsertDiscoveredItem('prothom-alo', 'bangladesh', {
+        url: 'https://www.prothomalo.com/bangladesh/blocked-3',
+        title: 'Blocked Article',
+        publishedAtRaw: '2026-11-10T12:00:00Z',
+      });
+      catalog.close();
+
+      // Mark one article as skipped directly in SQLite
+      const raw = new Database(dbPath);
+      raw.prepare("UPDATE article SET status = 'skipped' WHERE id = ?").run(skip.articleId);
+      raw.close();
+
+      const catalog2 = new CatalogDatabase(dbPath);
+      const pending = catalog2.getPendingArticlesForGcpExport();
+      expect(pending.map((p) => p.id)).toEqual([blocked.articleId, keep.articleId]);
+
+      // Even if a result record references the skipped ID, importGcpResults must preserve 'skipped'
+      // and leave 'blocked' rows untouched as 'discovered'
+      const res = catalog2.importGcpResults([
+        {
+          id: keep.articleId,
+          status: 'extracted',
+          title: 'Keep Article Updated',
+          cleanText: 'Full extracted body text with sufficient length to be valid.',
+        },
+        {
+          id: skip.articleId,
+          status: 'extracted',
+          title: 'Should Not Overwrite',
+          cleanText: 'Should never overwrite skipped status.',
+        },
+        {
+          id: blocked.articleId,
+          status: 'blocked',
+          errorMessage: 'HTTP 403 [server=cloudflare]',
+        },
+      ]);
+
+      expect(res.extracted).toBe(1);
+      expect(res.blockedLeftDiscovered).toBe(1);
+      expect(res.skippedPreserved).toBe(1);
+      expect(catalog2.getArticleById(keep.articleId)?.status).toBe('extracted');
+      expect(catalog2.getArticleById(skip.articleId)?.status).toBe('skipped');
+      expect(catalog2.getArticleById(blocked.articleId)?.status).toBe('discovered');
+      catalog2.close();
     } finally {
       rmSync(dbPath, { force: true });
       rmSync(`${dbPath}-wal`, { force: true });

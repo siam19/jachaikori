@@ -9,7 +9,7 @@ import { Command } from 'commander';
 import * as p from '@clack/prompts';
 import color from 'picocolors';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import {
@@ -239,68 +239,108 @@ program
 // ==========================================
 program
   .command('import-vectors')
-  .description('Imports binary float32 vectors from GCP GPU run and computes article centroid vectors')
+  .description('Imports binary float32 vectors from single or sharded GCP GPU runs and computes article centroids')
   .option('--index <path>', 'Path to index.sqlite', DEFAULT_INDEX)
-  .option('--manifest <path>', 'Path to manifest.json', join(DEFAULT_INDEX_DIR, 'manifest.json'))
-  .option('--bin <path>', 'Path to vectors.f32.bin', join(DEFAULT_INDEX_DIR, 'vectors.f32.bin'))
+  .option('--shards-dir <path>', 'Directory containing sharded part-*.manifest.json & part-*.f32.bin files', join(DEFAULT_INDEX_DIR, 'shards/latest'))
+  .option('--manifest <path>', 'Path to single manifest.json (fallback when no shards present)', join(DEFAULT_INDEX_DIR, 'manifest.json'))
+  .option('--bin <path>', 'Path to single vectors.f32.bin (fallback when no shards present)', join(DEFAULT_INDEX_DIR, 'vectors.f32.bin'))
   .action((opts) => {
     p.intro(color.bgCyan(color.black(' Jachaikori · Import BGE-M3 Vectors ')));
 
     const s = p.spinner();
-    s.start('Loading manifest and binary Float32Array vectors...');
+    s.start('Locating manifest and binary Float32Array vectors...');
 
-    const manifest = JSON.parse(readFileSync(opts.manifest, 'utf8')) as {
-      dims: number;
-      embeddingVersion: string;
-      chunkIds: string[];
-    };
-    const binBuf = readFileSync(opts.bin);
-    const alignedBuf =
-      binBuf.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
-        ? binBuf
-        : new Uint8Array(binBuf);
-    const floats = new Float32Array(
-      alignedBuf.buffer,
-      alignedBuf.byteOffset,
-      alignedBuf.byteLength / Float32Array.BYTES_PER_ELEMENT
-    );
+    const pairs: Array<{ label: string; manifestPath: string; binPath: string }> = [];
+    if (opts.shardsDir && existsSync(opts.shardsDir)) {
+      const shardManifests = readdirSync(opts.shardsDir)
+        .filter((f) => /^part-\d+\.manifest\.json$/.test(f))
+        .sort();
+      for (const mf of shardManifests) {
+        const binName = mf.replace(/\.manifest\.json$/, '.f32.bin');
+        const binPath = join(opts.shardsDir, binName);
+        if (!existsSync(binPath)) {
+          s.stop(color.red(`Missing binary file for shard ${mf}: ${binPath}`));
+          process.exit(1);
+        }
+        pairs.push({
+          label: mf.replace(/\.manifest\.json$/, ''),
+          manifestPath: join(opts.shardsDir, mf),
+          binPath,
+        });
+      }
+    }
 
-    const dims = manifest.dims;
-    const expectedLen = manifest.chunkIds.length * dims;
-    if (floats.length !== expectedLen) {
-      s.stop(color.red(`Vector length mismatch: got ${floats.length}, expected ${expectedLen}`));
-      process.exit(1);
+    if (pairs.length === 0) {
+      if (!existsSync(opts.manifest) || !existsSync(opts.bin)) {
+        s.stop(color.red(`No vector shards found in ${opts.shardsDir} and missing ${opts.manifest} / ${opts.bin}`));
+        process.exit(1);
+      }
+      pairs.push({ label: 'single', manifestPath: opts.manifest, binPath: opts.bin });
     }
 
     const idx = new IndexDatabase(opts.index);
     const batchSize = 2000;
+    let totalImported = 0;
+    let detectedDims = 1024;
+    let detectedVer = 'bge-m3-v1';
 
-    for (let i = 0; i < manifest.chunkIds.length; i += batchSize) {
-      const batch: Array<{
-        chunkId: string;
+    for (let pIdx = 0; pIdx < pairs.length; pIdx++) {
+      const pair = pairs[pIdx]!;
+      const manifest = JSON.parse(readFileSync(pair.manifestPath, 'utf8')) as {
         dims: number;
         embeddingVersion: string;
-        vector: Float32Array;
-      }> = [];
-      const end = Math.min(i + batchSize, manifest.chunkIds.length);
-      for (let j = i; j < end; j++) {
-        const vec = floats.subarray(j * dims, (j + 1) * dims);
-        batch.push({
-          chunkId: manifest.chunkIds[j]!,
-          dims,
-          embeddingVersion: manifest.embeddingVersion,
-          vector: vec,
-        });
+        chunkIds: string[];
+      };
+      const binBuf = readFileSync(pair.binPath);
+      const alignedBuf =
+        binBuf.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0
+          ? binBuf
+          : new Uint8Array(binBuf);
+      const floats = new Float32Array(
+        alignedBuf.buffer,
+        alignedBuf.byteOffset,
+        alignedBuf.byteLength / Float32Array.BYTES_PER_ELEMENT
+      );
+
+      const dims = manifest.dims;
+      detectedDims = dims;
+      detectedVer = manifest.embeddingVersion;
+      const expectedLen = manifest.chunkIds.length * dims;
+      if (floats.length !== expectedLen) {
+        s.stop(color.red(`Vector length mismatch in ${pair.label}: got ${floats.length}, expected ${expectedLen}`));
+        process.exit(1);
       }
-      idx.saveChunkVectorsBatch(batch);
-      s.message(`Imported ${end.toLocaleString()} / ${manifest.chunkIds.length.toLocaleString()} chunk vectors...`);
+
+      for (let i = 0; i < manifest.chunkIds.length; i += batchSize) {
+        const batch: Array<{
+          chunkId: string;
+          dims: number;
+          embeddingVersion: string;
+          vector: Float32Array;
+        }> = [];
+        const end = Math.min(i + batchSize, manifest.chunkIds.length);
+        for (let j = i; j < end; j++) {
+          const vec = floats.subarray(j * dims, (j + 1) * dims);
+          batch.push({
+            chunkId: manifest.chunkIds[j]!,
+            dims,
+            embeddingVersion: manifest.embeddingVersion,
+            vector: vec,
+          });
+        }
+        idx.saveChunkVectorsBatch(batch);
+        totalImported += batch.length;
+        s.message(
+          `[${pair.label} ${pIdx + 1}/${pairs.length}] Imported ${totalImported.toLocaleString()} chunk vectors...`
+        );
+      }
     }
 
     s.message('Computing weighted article centroid vectors...');
     const rows = idx.getArticleChunksWithVectors();
     let currentArticleId: string | null = null;
     let currentVecs: Float32Array[] = [];
-    let currentVer = manifest.embeddingVersion;
+    let currentVer = detectedVer;
     let articleCount = 0;
 
     for (const r of rows) {
@@ -311,7 +351,7 @@ program
       );
       if (currentArticleId && r.articleId !== currentArticleId) {
         const centroid = computeArticleCentroid(currentVecs);
-        idx.saveArticleVector(currentArticleId, dims, currentVer, centroid);
+        idx.saveArticleVector(currentArticleId, detectedDims, currentVer, centroid);
         articleCount++;
         currentVecs = [];
       }
@@ -321,12 +361,16 @@ program
     }
     if (currentArticleId && currentVecs.length > 0) {
       const centroid = computeArticleCentroid(currentVecs);
-      idx.saveArticleVector(currentArticleId, dims, currentVer, centroid);
+      idx.saveArticleVector(currentArticleId, detectedDims, currentVer, centroid);
       articleCount++;
     }
 
     idx.close();
-    s.stop(color.green(`Imported ${manifest.chunkIds.length.toLocaleString()} chunk vectors & ${articleCount.toLocaleString()} article centroids.`));
+    s.stop(
+      color.green(
+        `Imported ${totalImported.toLocaleString()} chunk vectors (${pairs.length} shard${pairs.length === 1 ? '' : 's'}) & ${articleCount.toLocaleString()} article centroids.`
+      )
+    );
     p.outro(color.dim('Next: run `bun run backfill cluster` to build cross-outlet event clusters.'));
   });
 

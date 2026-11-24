@@ -16,13 +16,13 @@ import { ScrapeDashboard, type OutletScrapeState } from '../ui/scrape-dashboard'
  * Outlets behind Cloudflare JS protection where plain HTTP always 403s.
  * Routing directly to persistent Playwright contexts avoids firing guaranteed-403 WAF probes.
  */
-const PLAYWRIGHT_NATIVE_OUTLETS = new Set<OutletId>([
+export const PLAYWRIGHT_NATIVE_OUTLETS = new Set<OutletId>([
   'bangladesh-protidin',
   'jugantor',
   'kaler-kantho',
 ]);
 
-const MIN_VALID_BODY_CHARS = 60;
+export const MIN_VALID_BODY_CHARS = 60;
 
 export interface ScrapeRunnerOptions {
   outlets: OutletCrawler[];
@@ -30,6 +30,8 @@ export interface ScrapeRunnerOptions {
   limitPerOutlet?: number;
   concurrency?: number;
   retryFailed?: boolean;
+  delayMs?: number;
+  fast?: boolean;
   signal?: AbortSignal;
   onShutdownTriggered?: (dashboard: ScrapeDashboard) => void;
 }
@@ -54,14 +56,16 @@ function randomInt(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
 
-function isChallengeOrCaptchaHtml(html: string): boolean {
-  if (html.length < 15_000) {
+export function isChallengeOrCaptchaHtml(html: string): boolean {
+  if (html.length < 120_000) {
     if (
       html.includes('<title>Just a moment...</title>') ||
       html.includes('Attention Required! | Cloudflare') ||
-      html.includes('cf-browser-verification') ||
-      html.includes('challenges.cloudflare.com/turnstile') ||
-      html.includes('Verify you are human')
+      html.includes('id="cf-browser-verification"') ||
+      html.includes('class="cf-browser-verification"') ||
+      html.includes('Enable JavaScript and cookies to continue') ||
+      html.includes('Verify you are human') ||
+      html.includes('id="challenge-form"')
     ) {
       return true;
     }
@@ -88,15 +92,27 @@ export async function runArticleScraper(options: ScrapeRunnerOptions): Promise<S
     limitPerOutlet,
     concurrency = 8,
     retryFailed = false,
+    delayMs,
+    fast = false,
     signal,
   } = options;
 
+  const effectiveCustomDelay = delayMs !== undefined ? Math.max(0, delayMs) : fast ? 200 : undefined;
+
   const startedAt = Date.now();
-  const limiter = new DomainRateLimiter({
-    baseDelayMs: 1500,
-    minJitterMs: 200,
-    jitterMs: 600,
-  });
+  const limiter = new DomainRateLimiter(
+    effectiveCustomDelay !== undefined
+      ? {
+          baseDelayMs: Math.max(50, effectiveCustomDelay),
+          minJitterMs: 25,
+          jitterMs: 75,
+        }
+      : {
+          baseDelayMs: 1500,
+          minJitterMs: 200,
+          jitterMs: 600,
+        }
+  );
 
   const httpClient = new PoliteHttpClient({
     limiter,
@@ -118,8 +134,13 @@ export async function runArticleScraper(options: ScrapeRunnerOptions): Promise<S
 
   const initialStates: OutletScrapeState[] = outlets.map((outlet) => {
     const domain = resolvePrimaryDomain(outlet);
-    // Safety floor on limiter (worker loop performs the primary human-paced sleep)
-    limiter.setDomainDelay(domain, Math.max(800, Math.floor(outlet.policy.crawlDelayMs * 0.6)));
+    // Safety floor on limiter (worker loop performs the primary pacing sleep)
+    limiter.setDomainDelay(
+      domain,
+      effectiveCustomDelay !== undefined
+        ? Math.max(50, Math.floor(effectiveCustomDelay * 0.7))
+        : Math.max(800, Math.floor(outlet.policy.crawlDelayMs * 0.6))
+    );
 
     const pendingQueue = catalog.getPendingArticlesForOutlet(outlet.id, {
       limit: limitPerOutlet,
@@ -204,19 +225,25 @@ export async function runArticleScraper(options: ScrapeRunnerOptions): Promise<S
     const usePlaywrightNative = PLAYWRIGHT_NATIVE_OUTLETS.has(outlet.id);
     // Playwright page loads naturally take ~500ms longer than HTTP fetch, so slightly tighter
     // post-load jitter keeps PW outlets advancing at the exact same ~20/min cadence as HTTP outlets.
-    const baseDelayMs = Math.max(outlet.policy.crawlDelayMs, usePlaywrightNative ? 1500 : 1600);
-    // Kaler Kantho sets sticky AWSALB/telemetry cookies after the 1st load that trigger 403 on reuse;
-    // using a fresh lightweight BrowserContext per URL inside the shared Browser avoids 403s completely (~430ms/page).
-    const maxNavsBeforeRecycle = outlet.id === 'kaler-kantho' ? 1 : 40;
-    let nextBreatherAt = randomInt(35, 45);
+    const baseDelayMs =
+      effectiveCustomDelay !== undefined
+        ? effectiveCustomDelay
+        : Math.max(outlet.policy.crawlDelayMs, usePlaywrightNative ? 1500 : 1600);
+    const minimalPacing = effectiveCustomDelay !== undefined && effectiveCustomDelay < 1000;
+    // Kaler Kantho and Jugantor set sticky AWSALB/Cloudflare session telemetry cookies after the 1st load
+    // that trigger 403 / "Just a moment..." on reuse; using a fresh lightweight BrowserContext per URL
+    // inside the shared Browser avoids session challenges cleanly (~430ms/page overhead).
+    const maxNavsBeforeRecycle =
+      outlet.id === 'kaler-kantho' || outlet.id === 'jugantor' ? 1 : 40;
+    let nextBreatherAt = minimalPacing ? Number.POSITIVE_INFINITY : randomInt(35, 45);
     let processedInOutlet = 0;
     let consecutiveBlocks = 0;
     let consecutiveNetDrops = 0;
     let stoppedReason: string | undefined;
 
-    // Stagger initial startup slightly (150–900ms) so all 8 outlets don't fire on the exact same tick
+    // Stagger initial startup slightly so all outlets don't fire on the exact same tick
     try {
-      const initialStagger = randomInt(150, 900);
+      const initialStagger = minimalPacing ? randomInt(50, 200) : randomInt(150, 900);
       await sleepWithPhase(outlet.id, 'waiting', initialStagger);
     } catch {
       // Aborted during initial stagger
@@ -229,7 +256,7 @@ export async function runArticleScraper(options: ScrapeRunnerOptions): Promise<S
 
       const item = pending[i]!;
 
-      // Inter-request human pacing before 2nd+ articles
+      // Inter-request pacing before 2nd+ articles
       if (processedInOutlet > 0) {
         try {
           if (processedInOutlet >= nextBreatherAt) {
@@ -237,9 +264,15 @@ export async function runArticleScraper(options: ScrapeRunnerOptions): Promise<S
             nextBreatherAt = processedInOutlet + randomInt(35, 45);
             await sleepWithPhase(outlet.id, 'breather', breatherMs);
           } else {
-            const jitterMs = usePlaywrightNative ? randomInt(400, 1100) : randomInt(600, 1600);
+            const jitterMs = minimalPacing
+              ? randomInt(40, 140)
+              : usePlaywrightNative
+                ? randomInt(400, 1100)
+                : randomInt(600, 1600);
             const politeMs = baseDelayMs + jitterMs;
-            await sleepWithPhase(outlet.id, 'waiting', politeMs);
+            if (politeMs > 0) {
+              await sleepWithPhase(outlet.id, 'waiting', politeMs);
+            }
           }
         } catch {
           // Aborted cleanly during sleep — row hasn't been touched, stays 'discovered'

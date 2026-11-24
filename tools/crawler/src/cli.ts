@@ -14,6 +14,8 @@ import { BrowserPool } from './engine/browser';
 import { runCrawlJob } from './engine/runner';
 import { runArticleScraper } from './engine/scraper';
 import { evaluateHeadlineForPrune } from './engine/prune';
+import { inspectGcpScrapeResults, runGcpScrapeOrchestrator } from './gcp/orchestrator';
+import { runGcpScrapeWorker } from './gcp/worker';
 import type { ScrapeDashboard } from './ui/scrape-dashboard';
 import { getAllOutlets, getOutlet, isAllowedArticleUrl } from '@jachaikori/outlets';
 import type { OutletCrawler } from '@jachaikori/outlets';
@@ -231,7 +233,7 @@ program
 program
   .command('scrape')
   .description('Concurrently scrapes full article bodies across outlets with polite pacing and static UI')
-  .option('-o, --outlet <outletId>', 'Target a single outlet ID (e.g. prothom-alo)')
+  .option('-o, --outlet <outletIds>', 'Comma-separated outlet IDs (e.g. business-standard,ittefaq,jugantor,kaler-kantho)')
   .option('-l, --limit <number>', 'Max articles to scrape per outlet in this session', (val) => parseInt(val, 10))
   .option(
     '-j, --concurrency <number>',
@@ -239,11 +241,19 @@ program
     (val) => parseInt(val, 10),
     8
   )
+  .option('--delay-ms <ms>', 'Override inter-article base delay in milliseconds (e.g. 200)', (val) => parseInt(val, 10))
+  .option('--fast', 'Use minimal inter-article cooldown (~200ms delay, no breather pauses)', false)
   .option('--retry-failed', 'Include previously failed articles in the scrape queue', false)
   .action(async (opts) => {
     p.intro(color.bgCyan(color.black(' Jachaikori · Polite Article Scraper ')));
 
-    const outlets = opts.outlet ? [getOutlet(opts.outlet as OutletId)] : getAllOutlets();
+    const outlets = opts.outlet
+      ? String(opts.outlet)
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((id) => getOutlet(id as OutletId))
+      : getAllOutlets();
     if (outlets.length === 0) {
       p.log.error('No registered outlets found to scrape.');
       process.exitCode = 1;
@@ -282,6 +292,8 @@ program
         limitPerOutlet: opts.limit,
         concurrency: Math.max(1, opts.concurrency ?? 8),
         retryFailed: Boolean(opts.retryFailed),
+        delayMs: Number.isFinite(opts.delayMs) ? opts.delayMs : undefined,
+        fast: Boolean(opts.fast),
         signal: abortController.signal,
         onShutdownTriggered: (dash) => {
           dashboardRef = dash;
@@ -645,6 +657,76 @@ program
       s.stop(color.red(`Recon failed: ${err.message}`));
       p.outro(color.red('Failed'));
     }
+  });
+
+// ==========================================
+// Command: gcp-scrape & gcp-worker
+// ==========================================
+program
+  .command('gcp-scrape')
+  .description('Export non-skipped articles, launch/resume Cloud Run scraping jobs, monitor progress, and import results')
+  .requiredOption('--project <id>', 'GCP Project ID')
+  .requiredOption('--bucket <name>', 'GCS bucket name')
+  .option('--region <region>', 'GCP region', 'asia-southeast1')
+  .option('--http-job <name>', 'Cloud Run HTTP job name', 'jachaikori-scrape-http')
+  .option('--browser-job <name>', 'Cloud Run Browser job name', 'jachaikori-scrape-browser')
+  .option('--http-tasks <n>', 'Concurrent tasks for HTTP job', (v) => parseInt(v, 10), 8)
+  .option('--browser-tasks <n>', 'Concurrent tasks for Browser job', (v) => parseInt(v, 10), 6)
+  .option('--chunk-size <n>', 'Articles per coordinated work chunk', (v) => parseInt(v, 10), 200)
+  .option('--retry-failed', 'Also include previously failed articles', false)
+  .option('--new', 'Force starting a new run instead of resuming an active un-imported run', false)
+  .option('--detach', 'Launch jobs and exit immediately without entering live monitor loop', false)
+  .option('-o, --outlets <ids>', 'Comma-separated outlet IDs to include')
+  .option('-x, --exclude-outlets <ids>', 'Comma-separated outlet IDs to exclude')
+  .action(async (opts) => {
+    const parseList = (raw?: string) =>
+      raw
+        ? (String(raw)
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean) as OutletId[])
+        : undefined;
+
+    await runGcpScrapeOrchestrator({
+      projectId: opts.project,
+      region: opts.region,
+      bucket: opts.bucket,
+      httpJobName: opts.httpJob,
+      browserJobName: opts.browserJob,
+      httpTasks: Math.max(1, opts.httpTasks),
+      browserTasks: Math.max(1, opts.browserTasks),
+      chunkSize: Math.max(10, opts.chunkSize),
+      retryFailed: Boolean(opts.retryFailed),
+      forceNew: Boolean(opts.new),
+      detach: Boolean(opts.detach),
+      outlets: parseList(opts.outlets),
+      excludeOutlets: parseList(opts.excludeOutlets),
+    });
+  });
+
+program
+  .command('gcp-worker')
+  .description('Internal Cloud Run Job task worker entrypoint')
+  .action(async () => {
+    await runGcpScrapeWorker();
+  });
+
+program
+  .command('gcp-inspect')
+  .description('Verify partial/completed GCP scrape quality directly from GCS without waiting for completion')
+  .option('--bucket <name>', 'GCS bucket name (defaults to jachaikori-backfill-<project>)')
+  .option('--run-id <id>', 'Run ID (defaults to scrape-runs/latest.json)')
+  .option('-o, --outlet <outletId>', 'Filter to a single outlet ID')
+  .option('-s, --samples <n>', 'Sample articles printed per outlet', (v) => parseInt(v, 10), 1)
+  .option('-f, --files <n>', 'Max result chunk files to inspect', (v) => parseInt(v, 10), 24)
+  .action(async (opts) => {
+    await inspectGcpScrapeResults({
+      bucket: opts.bucket,
+      runId: opts.runId,
+      outlet: opts.outlet as OutletId | undefined,
+      samplesPerOutlet: Math.max(1, opts.samples),
+      maxFiles: Math.max(1, opts.files),
+    });
   });
 
 // ==========================================
