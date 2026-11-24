@@ -51,6 +51,18 @@ export function normalizeBanglaForFts(text: string): string {
 }
 
 /**
+ * Splits normalized Bangla/English text into clean lowercase lexical tokens,
+ * preserving Bangla matras, hasanta, and nukta while stripping punctuation.
+ */
+export function tokenizeBangla(text: string): string[] {
+  const normalized = normalizeBanglaForFts(text);
+  return normalized
+    .split(/[\s।,;:!?()[\]{}"“”‘’/\\|+*=<>~^@#$%&]+/)
+    .map((t) => t.replace(/^[-'.]+|[-'.]+$/g, '').trim().toLowerCase())
+    .filter((t) => t.length > 0);
+}
+
+/**
  * Tokenizes a user search string into safe quoted FTS5 MATCH tokens.
  * Wrapping every term in double quotes prevents FTS5 syntax errors on Bangla combining marks
  * or punctuation (e.g. দাঁড়ি `।`, hyphens, colons).

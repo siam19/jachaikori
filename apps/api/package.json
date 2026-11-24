@@ -13,7 +13,8 @@
   "dependencies": {
     "@jachaikori/entities": "workspace:*",
     "@jachaikori/retrieval": "workspace:*",
-    "@jachaikori/schema": "workspace:*"
+    "@jachaikori/schema": "workspace:*",
+    "@jachaikori/verification": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250401.0",

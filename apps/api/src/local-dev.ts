@@ -1,13 +1,15 @@
 /**
  * @file apps/api/src/local-dev.ts
  * Local Bun HTTP server running the exact same `handleApiRequest` Worker logic
- * directly against `data/index/index.sqlite` (no Cloudflare login required).
+ * directly against `data/index/index.sqlite` with local R2 card storage,
+ * optional local BGE-M3 semantic search, and dual-provider VLM env wiring.
  */
 
 import { Database } from 'bun:sqlite';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { handleApiRequest, type ApiEnv } from './index';
+import { LocalSqliteVectorSearch } from './local-vector-search';
 
 export function createSqliteD1Adapter(db: Database): D1Database {
   return {
@@ -47,18 +49,98 @@ export function createSqliteD1Adapter(db: Database): D1Database {
   } as unknown as D1Database;
 }
 
+function createLocalImageStore(baseDir: string) {
+  return {
+    async put(key: string, bytes: Uint8Array, mimeType: string): Promise<void> {
+      const safeRel = key.replace(/^\/+/, '').replace(/\.\./g, '');
+      const fullPath = join(baseDir, safeRel);
+      mkdirSync(dirname(fullPath), { recursive: true });
+      writeFileSync(fullPath, bytes);
+      writeFileSync(`${fullPath}.mime`, mimeType, 'utf8');
+    },
+    async get(key: string): Promise<{ bytes: Uint8Array; mimeType: string } | null> {
+      const safeRel = key.replace(/^\/+/, '').replace(/\.\./g, '');
+      const fullPath = join(baseDir, safeRel);
+      if (!existsSync(fullPath)) return null;
+      const bytes = new Uint8Array(readFileSync(fullPath));
+      const mimeType = existsSync(`${fullPath}.mime`)
+        ? readFileSync(`${fullPath}.mime`, 'utf8').trim()
+        : 'image/jpeg';
+      return { bytes, mimeType };
+    },
+  };
+}
+
+function createGcloudTokenProvider(): () => Promise<string> {
+  let cachedToken = '';
+  let expiresAt = 0;
+  return async () => {
+    if (cachedToken && Date.now() < expiresAt) return cachedToken;
+    const gcloudBin =
+      process.env.GCLOUD_BIN ??
+      (existsSync('/home/bast0k/google-cloud-sdk/bin/gcloud')
+        ? '/home/bast0k/google-cloud-sdk/bin/gcloud'
+        : 'gcloud');
+    const proc = Bun.spawn([gcloudBin, 'auth', 'print-access-token'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const out = await new Response(proc.stdout).text();
+    const code = await proc.exited;
+    if (code !== 0 || !out.trim()) {
+      const err = await new Response(proc.stderr).text();
+      throw new Error(`Failed to fetch gcloud access token: ${err.trim()}`);
+    }
+    cachedToken = out.trim();
+    expiresAt = Date.now() + 15 * 60 * 1000;
+    return cachedToken;
+  };
+}
+
+function ensureLocalCheckTables(db: Database): void {
+  const migrationPath = resolve(import.meta.dir, '../migrations/0005_checks.sql');
+  if (existsSync(migrationPath)) {
+    db.run(readFileSync(migrationPath, 'utf8'));
+  }
+}
+
 if (import.meta.main) {
-  const dbPath =
-    process.env.INDEX_DB_PATH ??
-    resolve(import.meta.dir, '../../../data/index/index.sqlite');
+  const repoRoot = resolve(import.meta.dir, '../../..');
+  const dbPath = process.env.INDEX_DB_PATH ?? resolve(repoRoot, 'data/index/index.sqlite');
   if (!existsSync(dbPath)) {
     console.error(`Index SQLite not found at ${dbPath}. Run "bun run backfill chunk" first.`);
     process.exit(1);
   }
 
-  const sqlite = new Database(dbPath, { readonly: true });
+  const sqlite = new Database(dbPath);
+  sqlite.run('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+  ensureLocalCheckTables(sqlite);
+
+  const localVec = new LocalSqliteVectorSearch(sqlite, {
+    cfAccountId: process.env.CF_ACCOUNT_ID,
+    cfApiToken: process.env.CF_API_TOKEN,
+    localEmbedUrl: process.env.LOCAL_EMBED_URL,
+  });
+
+  const gcpProject = process.env.GCP_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
   const env: ApiEnv = {
     DB: createSqliteD1Adapter(sqlite),
+    VLM_PROVIDER: process.env.VLM_PROVIDER ?? 'auto',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    GEMINI_MODEL: process.env.GEMINI_MODEL ?? 'gemini-3.5-flash',
+    GCP_PROJECT_ID: gcpProject,
+    GCP_LOCATION: process.env.GCP_LOCATION ?? 'global',
+    GCP_ACCESS_TOKEN: process.env.GCP_ACCESS_TOKEN,
+    GET_GCP_ACCESS_TOKEN: gcpProject && !process.env.GCP_ACCESS_TOKEN ? createGcloudTokenProvider() : undefined,
+    CF_ACCOUNT_ID: process.env.CF_ACCOUNT_ID,
+    CF_API_TOKEN: process.env.CF_API_TOKEN,
+    WORKERS_AI_VISION_MODEL: process.env.WORKERS_AI_VISION_MODEL,
+    WORKERS_AI_TEXT_MODEL: process.env.WORKERS_AI_TEXT_MODEL,
+    WORKERS_AI_RERANKER_MODEL: process.env.WORKERS_AI_RERANKER_MODEL,
+    LOCAL_IMAGE_STORE: createLocalImageStore(resolve(repoRoot, 'data/uploads')),
+    LOCAL_SEMANTIC_SEARCH: localVec.isEnabled
+      ? (q, limit) => localVec.search(q, limit)
+      : undefined,
   };
 
   const hostname = process.env.HOST ?? '127.0.0.1';
@@ -71,5 +153,7 @@ if (import.meta.main) {
     },
   });
 
-  console.log(`Jachaikori local API listening at http://${hostname}:${port} (DB: ${dbPath})`);
+  console.log(
+    `Jachaikori local API listening at http://${hostname}:${port} (DB: ${dbPath} | VLM: ${env.VLM_PROVIDER} | LocalVector: ${localVec.isEnabled ? 'enabled' : 'keyword-only'})`
+  );
 }

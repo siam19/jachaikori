@@ -20,6 +20,18 @@ import {
   type CompiledRegistry,
 } from '@jachaikori/entities';
 import {
+  base64ToBytes,
+  createVerificationProviders,
+  MAX_IMAGE_BYTES,
+  runVerificationPipeline,
+  SqlVlmCache,
+  type CandidateReranker,
+  type VerificationImageStore,
+  type VerificationPipelineInput,
+  type VerificationRetriever,
+  type VlmExtractor,
+} from '@jachaikori/verification';
+import {
   normalizeRelationType,
   SearchRequestSchema,
   type ClusterGraphResponse,
@@ -41,12 +53,36 @@ import {
   type OutletId,
   type RegistrySnapshot,
   type RoleTerm,
+  type VlmProviderPreference,
 } from '@jachaikori/schema';
+import { D1VerificationCheckStore } from './verify-store';
+
+export interface LocalImageStoreAdapter {
+  put(key: string, bytes: Uint8Array, mimeType: string): Promise<void>;
+  get(key: string): Promise<{ bytes: Uint8Array; mimeType: string } | null>;
+}
 
 export interface ApiEnv {
   DB: D1Database;
   VECTORIZE?: VectorizeIndex;
   AI?: Ai;
+  CARDS_BUCKET?: R2Bucket;
+  VLM_PROVIDER?: string;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
+  GCP_PROJECT_ID?: string;
+  GCP_LOCATION?: string;
+  GCP_ACCESS_TOKEN?: string;
+  GET_GCP_ACCESS_TOKEN?: () => Promise<string>;
+  CF_ACCOUNT_ID?: string;
+  CF_API_TOKEN?: string;
+  WORKERS_AI_VISION_MODEL?: string;
+  WORKERS_AI_TEXT_MODEL?: string;
+  WORKERS_AI_RERANKER_MODEL?: string;
+  VERIFY_EXTRACTOR?: VlmExtractor;
+  VERIFY_RERANKER?: CandidateReranker;
+  LOCAL_SEMANTIC_SEARCH?: (queryText: string, limit: number) => Promise<RankedChunkCandidate[]>;
+  LOCAL_IMAGE_STORE?: LocalImageStoreAdapter;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -251,10 +287,20 @@ async function runKeywordSearch(
     params.push(`${opts.toDate}T23:59:59Z`);
   }
 
-  const whereExtra = filters.length > 0 ? `AND ${filters.join(' AND ')}` : '';
-  params.push(opts.limit);
+  const hasExtraFilters = filters.length > 0;
+  const whereExtra = hasExtraFilters ? `WHERE ${filters.join(' AND ')}` : '';
+  const ftsPreLimit = hasExtraFilters ? Math.min(500, opts.limit * 8) : opts.limit;
 
+  // CTE restricts chunk/article/cluster JOINs strictly to the top BM25 FTS5 rowids
+  // (avoids joining 150k+ rows before LIMIT on broad Bangla/English OR queries!).
   const sql = `
+    WITH hits AS (
+      SELECT rowid, bm25(chunk_fts) as rank
+      FROM chunk_fts
+      WHERE chunk_fts MATCH ?
+      ORDER BY rank ASC
+      LIMIT ?
+    )
     SELECT
       c.id as chunkId,
       c.article_id as articleId,
@@ -265,18 +311,18 @@ async function runKeywordSearch(
       a.published_at as publishedAt,
       ac.cluster_id as clusterId,
       ec.outlet_count as clusterOutletCount
-    FROM chunk_fts f
-    JOIN chunk c ON c.rowid = f.rowid
+    FROM hits h
+    JOIN chunk c ON c.rowid = h.rowid
     JOIN article a ON a.id = c.article_id
     LEFT JOIN article_cluster ac ON ac.article_id = a.id
     LEFT JOIN event_cluster ec ON ec.id = ac.cluster_id
-    WHERE chunk_fts MATCH ?
     ${whereExtra}
-    ORDER BY bm25(chunk_fts) ASC
+    ORDER BY h.rank ASC
     LIMIT ?
   `;
 
-  const res = await db.prepare(sql).bind(...params).all<any>();
+  const boundParams = [ftsQuery, ftsPreLimit, ...params.slice(1), opts.limit];
+  const res = await db.prepare(sql).bind(...boundParams).all<any>();
   return (res.results ?? []).map((r) => ({
     chunkId: r.chunkId,
     articleId: r.articleId,
@@ -2235,6 +2281,227 @@ async function handleEventGraph(rawEventId: string, url: URL, env: ApiEnv): Prom
   });
 }
 
+function parseProviderPreference(raw: string | null | undefined): VlmProviderPreference {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === 'gemini' || v === 'workers-ai' || v === 'auto') return v;
+  return 'auto';
+}
+
+async function handleVerify(request: Request, env: ApiEnv): Promise<Response> {
+  const contentType = request.headers.get('content-type') ?? '';
+  let pipelineInput: VerificationPipelineInput;
+  let providerOverride: string | undefined;
+  let bypassCache = false;
+
+  if (contentType.includes('multipart/form-data')) {
+    const contentLength = Number(request.headers.get('content-length') ?? 0);
+    if (contentLength > MAX_IMAGE_BYTES + 256 * 1024) {
+      return json({ error: `Upload exceeds maximum size of ${MAX_IMAGE_BYTES / (1024 * 1024)} MB` }, 413);
+    }
+
+    let form: FormData;
+    try {
+      form = await request.formData();
+    } catch {
+      return json({ error: 'Invalid multipart/form-data payload' }, 400);
+    }
+
+    const rawProvider = form.get('provider');
+    if (typeof rawProvider === 'string' && rawProvider.trim()) providerOverride = rawProvider.trim();
+    const rawBypass = form.get('bypassCache');
+    if (rawBypass === 'true' || rawBypass === '1') bypassCache = true;
+
+    const imageField = form.get('image') ?? form.get('file');
+    const textField = form.get('text');
+
+    if (imageField && typeof imageField !== 'string') {
+      const file = imageField as File;
+      if (file.size > MAX_IMAGE_BYTES) {
+        return json({ error: `Image exceeds maximum allowed size of ${MAX_IMAGE_BYTES / (1024 * 1024)} MB` }, 413);
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      pipelineInput = { type: 'image', bytes, bypassCache };
+    } else if (typeof textField === 'string' && textField.trim()) {
+      pipelineInput = { type: 'text', text: textField, bypassCache };
+    } else {
+      return json({ error: 'Provide either an `image` file or `text` field to verify' }, 400);
+    }
+  } else {
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return json({ error: 'Invalid JSON request body' }, 400);
+    }
+
+    if (typeof body.provider === 'string' && body.provider.trim()) {
+      providerOverride = body.provider.trim();
+    }
+    bypassCache = Boolean(body.bypassCache);
+
+    if (typeof body.imageBase64 === 'string' && body.imageBase64.trim()) {
+      let bytes: Uint8Array;
+      try {
+        bytes = base64ToBytes(body.imageBase64);
+      } catch {
+        return json({ error: 'Invalid base64 image payload' }, 400);
+      }
+      if (bytes.byteLength > MAX_IMAGE_BYTES) {
+        return json({ error: `Image exceeds maximum allowed size of ${MAX_IMAGE_BYTES / (1024 * 1024)} MB` }, 413);
+      }
+      pipelineInput = { type: 'image', bytes, bypassCache };
+    } else if (typeof body.text === 'string' && body.text.trim()) {
+      pipelineInput = { type: 'text', text: body.text, bypassCache };
+    } else {
+      return json({ error: 'Provide `text` or `imageBase64` (or multipart `image`) to verify' }, 400);
+    }
+  }
+
+  const cached = await getCachedRegistry(env.DB);
+  const preference = parseProviderPreference(providerOverride ?? env.VLM_PROVIDER);
+  const providers =
+    env.VERIFY_EXTRACTOR && env.VERIFY_RERANKER
+      ? { extractor: env.VERIFY_EXTRACTOR, reranker: env.VERIFY_RERANKER }
+      : createVerificationProviders({
+          preference,
+          gemini: {
+            apiKey: env.GEMINI_API_KEY,
+            vertexProjectId: env.GCP_PROJECT_ID,
+            vertexLocation: env.GCP_LOCATION ?? 'global',
+            vertexAccessToken: env.GCP_ACCESS_TOKEN,
+            getVertexAccessToken: env.GET_GCP_ACCESS_TOKEN,
+            model: env.GEMINI_MODEL ?? (env.GCP_PROJECT_ID ? 'gemini-3.5-flash' : 'gemini-2.5-flash'),
+          },
+          workersAi: {
+            aiBinding: env.AI ? { run: (m, i) => (env.AI as any).run(m, i) } : undefined,
+            accountId: env.CF_ACCOUNT_ID,
+            apiToken: env.CF_API_TOKEN,
+            visionModel: env.WORKERS_AI_VISION_MODEL,
+            textModel: env.WORKERS_AI_TEXT_MODEL,
+            rerankerModel: env.WORKERS_AI_RERANKER_MODEL,
+          },
+        });
+
+  const imageStore: VerificationImageStore | undefined = env.CARDS_BUCKET
+    ? {
+        async put(key, bytes, mimeType) {
+          await env.CARDS_BUCKET!.put(key, bytes, { httpMetadata: { contentType: mimeType } });
+        },
+      }
+    : env.LOCAL_IMAGE_STORE
+    ? {
+        put: (key, bytes, mimeType) => env.LOCAL_IMAGE_STORE!.put(key, bytes, mimeType),
+      }
+    : undefined;
+
+  const retriever: VerificationRetriever = {
+    searchKeyword: (ftsQuery, limit) => runKeywordSearch(env.DB, ftsQuery, { limit }),
+    searchSemantic: (queryText, limit) =>
+      env.LOCAL_SEMANTIC_SEARCH
+        ? env.LOCAL_SEMANTIC_SEARCH(queryText, limit)
+        : runSemanticSearch(env, queryText, { limit }),
+    async getArticleEntityMatches(articleIds, targetEntityIds) {
+      const out = new Map<string, string[]>();
+      if (articleIds.length === 0 || targetEntityIds.length === 0) return out;
+      try {
+        const aPh = articleIds.slice(0, 40).map(() => '?').join(',');
+        const ePh = targetEntityIds.slice(0, 30).map(() => '?').join(',');
+        const rows = await env.DB.prepare(
+          `SELECT article_id as articleId, entity_id as entityId
+           FROM article_entity
+           WHERE article_id IN (${aPh}) AND entity_id IN (${ePh})`
+        )
+          .bind(...articleIds.slice(0, 40), ...targetEntityIds.slice(0, 30))
+          .all<{ articleId: string; entityId: string }>();
+        for (const r of rows.results ?? []) {
+          const list = out.get(r.articleId) ?? [];
+          if (!list.includes(r.entityId)) list.push(r.entityId);
+          out.set(r.articleId, list);
+        }
+      } catch {
+        // Non-fatal
+      }
+      return out;
+    },
+  };
+
+  try {
+    const check = await runVerificationPipeline(pipelineInput, {
+      extractor: env.VERIFY_EXTRACTOR ?? providers.extractor,
+      reranker: env.VERIFY_RERANKER ?? providers.reranker,
+      compiledRegistry: cached.compiled,
+      expander: cached.expander,
+      retriever,
+      checkStore: new D1VerificationCheckStore(env.DB),
+      vlmCache: new SqlVlmCache(env.DB),
+      imageStore,
+    });
+    return json(check, 200);
+  } catch (err: any) {
+    const msg = err instanceof Error ? err.message : 'Verification failed';
+    const isUpstream = /gemini http|workers ai http|workers ai error/i.test(msg);
+    const statusCode = isUpstream
+      ? 502
+      : /unsupported image|too small|cannot be empty|invalid/i.test(msg)
+      ? 400
+      : /exceeds maximum/i.test(msg)
+      ? 413
+      : 500;
+    return json({ error: msg }, statusCode);
+  }
+}
+
+async function handleGetCheck(checkId: string, env: ApiEnv): Promise<Response> {
+  const store = new D1VerificationCheckStore(env.DB);
+  const check = await store.getById(checkId);
+  if (!check) return json({ error: 'Verification check not found' }, 404);
+  return json(check);
+}
+
+async function handlePopularChecks(url: URL, env: ApiEnv): Promise<Response> {
+  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
+  const rawStatus = url.searchParams.get('status')?.trim();
+  const status =
+    rawStatus === 'matched' || rawStatus === 'no_coverage' || rawStatus === 'non_claim'
+      ? rawStatus
+      : undefined;
+  const store = new D1VerificationCheckStore(env.DB);
+  const checks = await store.listPopular({ limit, status });
+  return json({ checks });
+}
+
+async function handleGetCheckImage(checkId: string, env: ApiEnv): Promise<Response> {
+  const store = new D1VerificationCheckStore(env.DB);
+  const check = await store.getById(checkId);
+  if (!check || !check.r2Key) {
+    return json({ error: 'Check image not found' }, 404);
+  }
+
+  if (env.CARDS_BUCKET) {
+    const obj = await env.CARDS_BUCKET.get(check.r2Key);
+    if (!obj) return json({ error: 'Stored image object not found' }, 404);
+    const headers = new Headers(CORS_HEADERS);
+    headers.set('Content-Type', obj.httpMetadata?.contentType ?? 'image/jpeg');
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    return new Response(obj.body, { status: 200, headers });
+  }
+
+  if (env.LOCAL_IMAGE_STORE) {
+    const item = await env.LOCAL_IMAGE_STORE.get(check.r2Key);
+    if (!item) return json({ error: 'Stored image object not found' }, 404);
+    return new Response(new Uint8Array(item.bytes), {
+      status: 200,
+      headers: {
+        ...CORS_HEADERS,
+        'Content-Type': item.mimeType,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      },
+    });
+  }
+
+  return json({ error: 'Image storage not configured' }, 404);
+}
+
 export async function handleApiRequest(request: Request, env: ApiEnv): Promise<Response> {
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -2242,6 +2509,24 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
 
   const url = new URL(request.url);
   const path = url.pathname;
+
+  if (path === '/verify' && request.method === 'POST') {
+    return handleVerify(request, env);
+  }
+
+  if (path === '/checks/popular' && request.method === 'GET') {
+    return handlePopularChecks(url, env);
+  }
+
+  const checkImageMatch = path.match(/^\/checks\/([^/]+)\/image$/);
+  if (checkImageMatch && request.method === 'GET') {
+    return handleGetCheckImage(decodeURIComponent(checkImageMatch[1]!), env);
+  }
+
+  const checkMatch = path.match(/^\/checks\/([^/]+)$/);
+  if (checkMatch && request.method === 'GET') {
+    return handleGetCheck(decodeURIComponent(checkMatch[1]!), env);
+  }
 
   if (path === '/health' && request.method === 'GET') {
     const counts = await env.DB.prepare(

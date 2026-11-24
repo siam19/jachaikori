@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { EntitySummarySchema } from './entity';
 import { OutletIdSchema } from './outlet';
 
 export const EventClusterSchema = z.object({
@@ -41,5 +42,6 @@ export const ClusterGraphResponseSchema = z.object({
   cluster: EventClusterSchema.nullable(),
   nodes: z.array(GraphNodeSchema),
   edges: z.array(GraphEdgeSchema),
+  entities: z.array(EntitySummarySchema).optional(),
 });
 export type ClusterGraphResponse = z.infer<typeof ClusterGraphResponseSchema>;

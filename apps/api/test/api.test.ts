@@ -29,10 +29,15 @@ function createTestEnv(): { db: Database; env: ApiEnv } {
     join(import.meta.dir, '../migrations/0004_entity_v2.sql'),
     'utf8'
   );
+  const migration5 = readFileSync(
+    join(import.meta.dir, '../migrations/0005_checks.sql'),
+    'utf8'
+  );
   db.run(migration1);
   db.run(migration2);
   db.run(migration3);
   db.run(migration4);
+  db.run(migration5);
 
   db.run(
     `INSERT INTO article (id, outlet, canonical_url, title, published_at, lead, clean_text)
@@ -401,6 +406,139 @@ describe('API Worker Routes', () => {
       );
       const egoWithHubData = (await egoWithHub.json()) as any;
       expect(egoWithHubData.neighbors.some((n: any) => n.id === 'ent_bangladesh')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('serves Sprint 6 POST /verify (multipart image + JSON text), exact cache, /checks/:id, /checks/:id/image, and /checks/popular', async () => {
+    const { db, env: baseEnv } = createTestEnv();
+    try {
+      // Minimal valid 1x1 PNG bytes (> 32 bytes)
+      const pngBytes = new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde,
+        0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54,
+        0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00,
+        0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb0,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+        0xae, 0x42, 0x60, 0x82,
+      ]);
+
+      const storedImages = new Map<string, { bytes: Uint8Array; mimeType: string }>();
+      const env: ApiEnv = {
+        ...baseEnv,
+        VLM_PROVIDER: 'workers-ai',
+        AI: {
+          async run(model: string) {
+            if (model.includes('bge-reranker')) {
+              return { response: [{ id: 0, score: 0.93 }] };
+            }
+            return {
+              response: JSON.stringify({
+                inputKind: 'photo_card',
+                language: 'bn',
+                headline: 'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্প অনুমোদন',
+                ocrText: 'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্প অনুমোদন — প্রথম আলো',
+                quotedSpeaker: null,
+                attributedStatement: 'কক্সবাজারে নতুন এলএনজি টার্মিনাল নির্মাণে চুক্তি সই হয়েছে।',
+                isQuote: false,
+                claimedNumbers: [],
+                claimedDates: ['2026-11-12'],
+                claimedEntities: ['কক্সবাজার'],
+                publisherLogo: 'প্রথম আলো',
+                hasVerifiableClaim: true,
+                confidence: 0.95,
+              }),
+            };
+          },
+        } as unknown as Ai,
+        LOCAL_IMAGE_STORE: {
+          async put(key, bytes, mimeType) {
+            storedImages.set(key, { bytes, mimeType });
+          },
+          async get(key) {
+            return storedImages.get(key) ?? null;
+          },
+        },
+      };
+
+      // 1) Multipart image upload -> matched + stored image
+      const form = new FormData();
+      form.append('image', new File([pngBytes], 'card.png', { type: 'image/png' }));
+      const verifyRes = await handleApiRequest(
+        new Request('http://localhost/verify', { method: 'POST', body: form }),
+        env
+      );
+      expect(verifyRes.status).toBe(200);
+      const check = (await verifyRes.json()) as any;
+      expect(check.status).toBe('matched');
+      expect(check.provider).toBe('workers-ai');
+      expect(check.extraction.publisherLogoOutletId).toBe('prothom-alo');
+      expect(check.sources.length).toBeGreaterThanOrEqual(1);
+      expect(check.sources[0].articleId).toBe('art-pa-1');
+      expect(check.imageUrl).toBe(`/checks/${check.id}/image`);
+
+      // 2) GET /checks/:id/image serves stored PNG
+      const imgRes = await handleApiRequest(new Request(`http://localhost${check.imageUrl}`), env);
+      expect(imgRes.status).toBe(200);
+      expect(imgRes.headers.get('content-type')).toBe('image/png');
+      expect((await imgRes.arrayBuffer()).byteLength).toBe(pngBytes.byteLength);
+
+      // 3) Duplicate upload hits exact cache & increments hitCount
+      const form2 = new FormData();
+      form2.append('image', new File([pngBytes], 'repost.png', { type: 'image/png' }));
+      const verifyRes2 = await handleApiRequest(
+        new Request('http://localhost/verify', { method: 'POST', body: form2 }),
+        env
+      );
+      expect(verifyRes2.status).toBe(200);
+      const check2 = (await verifyRes2.json()) as any;
+      expect(check2.id).toBe(check.id);
+      expect(check2.cacheHit).toBe('exact');
+      expect(check2.hitCount).toBe(2);
+      expect(check2.costUsd).toBe(0);
+
+      // 4) GET /checks/:id & GET /checks/popular
+      const getRes = await handleApiRequest(new Request(`http://localhost/checks/${check.id}`), env);
+      expect(getRes.status).toBe(200);
+      const fetched = (await getRes.json()) as any;
+      expect(fetched.hitCount).toBe(2);
+
+      const popRes = await handleApiRequest(new Request('http://localhost/checks/popular?limit=10'), env);
+      expect(popRes.status).toBe(200);
+      const pop = (await popRes.json()) as any;
+      expect(pop.checks.length).toBe(1);
+      expect(pop.checks[0].id).toBe(check.id);
+      expect(pop.checks[0].hitCount).toBe(2);
+      expect(pop.checks[0].topOutlet).toBe('prothom-alo');
+
+      // 5) Invalid image payload rejected cleanly with HTTP 400
+      const badForm = new FormData();
+      badForm.append('image', new File([new TextEncoder().encode('not-an-image-bytes-at-all-1234567890')], 'bad.jpg'));
+      const badRes = await handleApiRequest(
+        new Request('http://localhost/verify', { method: 'POST', body: badForm }),
+        env
+      );
+      expect(badRes.status).toBe(400);
+
+      // 6) Fictional text claim returns honest `no_coverage`
+      const noCovRes = await handleApiRequest(
+        new Request('http://localhost/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: 'মঙ্গল গ্রহে বুলেট ট্রেন চালু হয়েছে বলে দাবি করা হয়েছে',
+          }),
+        }),
+        { ...baseEnv, VLM_PROVIDER: 'auto' } // uses Heuristic fallback with zero LLM keys
+      );
+      expect(noCovRes.status).toBe(200);
+      const noCov = (await noCovRes.json()) as any;
+      expect(noCov.status).toBe('no_coverage');
+      expect(noCov.emptyStateNotice.en).toContain('does not mean the claim is false');
     } finally {
       db.close();
     }

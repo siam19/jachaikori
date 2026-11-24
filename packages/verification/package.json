@@ -1,0 +1,16 @@
+{
+  "name": "@jachaikori/verification",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@jachaikori/entities": "workspace:*",
+    "@jachaikori/retrieval": "workspace:*",
+    "@jachaikori/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

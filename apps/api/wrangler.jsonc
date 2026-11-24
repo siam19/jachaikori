@@ -2,9 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "jachaikori-api",
   "main": "src/index.ts",
-  "compatibility_date": "2026-11-01",
+  "compatibility_date": "2026-11-24",
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
   },
   "d1_databases": [
     {
@@ -20,7 +23,19 @@
       "index_name": "jachaikori-chunks"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "CARDS_BUCKET",
+      "bucket_name": "jachaikori-cards"
+    }
+  ],
   "ai": {
     "binding": "AI"
+  },
+  "vars": {
+    "VLM_PROVIDER": "auto",
+    "WORKERS_AI_VISION_MODEL": "@cf/meta/llama-3.2-11b-vision-instruct",
+    "WORKERS_AI_TEXT_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "WORKERS_AI_RERANKER_MODEL": "@cf/baai/bge-reranker-base"
   }
 }

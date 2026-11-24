@@ -12,3 +12,4 @@ export * from './chunk';
 export * from './entity';
 export * from './cluster';
 export * from './search';
+export * from './verification';
