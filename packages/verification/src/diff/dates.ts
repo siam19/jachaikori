@@ -9,7 +9,7 @@
  */
 
 import type { ClaimDiffItem } from '@jachaikori/schema';
-import { toAsciiDigits } from './numbers';
+import { toAsciiDigits, toBanglaDigits } from './numbers';
 
 export interface ParsedDateRef {
   raw: string;
@@ -211,7 +211,7 @@ export function compareDateClaims(params: {
           cardSpan: c.raw,
           articleSpan: best.isoDate,
           explanationEn: `Date aligns with accredited reporting (${c.isoDate}).`,
-          explanationBn: `তারিখটি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ (${c.isoDate})।`,
+          explanationBn: `তারিখটি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ (${toBanglaDigits(c.isoDate)})।`,
           confidence: 0.96,
         });
       } else if (bestGap >= 30) {
@@ -222,7 +222,7 @@ export function compareDateClaims(params: {
           cardSpan: c.raw,
           articleSpan: best.isoDate,
           explanationEn: `Card displays "${c.raw}" (${c.isoDate}), while the matched accredited report is dated ${best.isoDate} (${bestGap} days apart).`,
-          explanationBn: `কার্ডে তারিখ "${c.raw}" (${c.isoDate}) দেখালেও মূলধারার প্রতিবেদনটি ${best.isoDate} তারিখের (${bestGap} দিনের ব্যবধান)।`,
+          explanationBn: `কার্ডে তারিখ "${c.raw}" (${toBanglaDigits(c.isoDate)}) দেখালেও মূলধারার প্রতিবেদনটি ${toBanglaDigits(best.isoDate)} তারিখের (${toBanglaDigits(String(bestGap))} দিনের ব্যবধান)।`,
           confidence: 0.95,
         });
       } else {
@@ -233,7 +233,7 @@ export function compareDateClaims(params: {
           cardSpan: c.raw,
           articleSpan: best.isoDate,
           explanationEn: `Card cites "${c.raw}" (${c.isoDate}), whereas the accredited article cites ${best.isoDate} (${bestGap} days apart).`,
-          explanationBn: `কার্ডে "${c.raw}" (${c.isoDate}) উল্লেখ থাকলেও প্রতিবেদনে ${best.isoDate} উল্লেখ রয়েছে (${bestGap} দিনের ব্যবধান)।`,
+          explanationBn: `কার্ডে "${c.raw}" (${toBanglaDigits(c.isoDate)}) উল্লেখ থাকলেও প্রতিবেদনে ${toBanglaDigits(best.isoDate)} উল্লেখ রয়েছে (${toBanglaDigits(String(bestGap))} দিনের ব্যবধান)।`,
           confidence: 0.92,
         });
       }
@@ -255,7 +255,7 @@ export function compareDateClaims(params: {
           cardSpan: 'breaking / today framing',
           articleSpan: artPub.isoDate,
           explanationEn: `Card uses recent/breaking framing, while the matched accredited article was published on ${artPub.isoDate} (${ageDays} days earlier).`,
-          explanationBn: `কার্ডটিতে সাম্প্রতিক ঘটনার ইঙ্গিত থাকলেও মূলধারার প্রতিবেদনটি ${artPub.isoDate} তারিখে প্রকাশিত (${ageDays} দিন আগের)।`,
+          explanationBn: `কার্ডটিতে সাম্প্রতিক ঘটনার ইঙ্গিত থাকলেও মূলধারার প্রতিবেদনটি ${toBanglaDigits(artPub.isoDate)} তারিখে প্রকাশিত (${toBanglaDigits(String(ageDays))} দিন আগের)।`,
           confidence: 0.86,
         });
       }

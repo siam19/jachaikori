@@ -1364,7 +1364,24 @@ async function handleEntityRelations(rawEntityId: string, url: URL, env: ApiEnv)
   const exists = await env.DB.prepare('SELECT id FROM entity WHERE id = ?').bind(entityId).first<{ id: string }>();
   if (!exists) return json({ error: 'Entity not found' }, 404);
 
-  const relTypeFilter = url.searchParams.get('type')?.trim() || undefined;
+  const relTypeFilterRaw = url.searchParams.get('type')?.trim() || '';
+  const relTypeFilters = relTypeFilterRaw
+    ? Array.from(
+        new Set(
+          relTypeFilterRaw
+            .split(',')
+            .map((part) => normalizeRelationType(part))
+            .filter((t): t is EntityRelationType => t !== null)
+        )
+      )
+    : [];
+  if (relTypeFilterRaw && relTypeFilters.length === 0) {
+    return json({
+      entityId,
+      ...(redirectedFrom ? { redirectedFrom } : {}),
+      relations: [],
+    });
+  }
   const sourceFilter = url.searchParams.get('source')?.trim() || undefined;
   const fromDate = url.searchParams.get('from')?.trim() || undefined;
   const toDateRaw = url.searchParams.get('to')?.trim() || undefined;
@@ -1374,9 +1391,12 @@ async function handleEntityRelations(rawEntityId: string, url: URL, env: ApiEnv)
 
   const where: string[] = ['(r.source_entity_id = ? OR r.target_entity_id = ?)'];
   const params: unknown[] = [entityId, entityId];
-  if (relTypeFilter) {
+  if (relTypeFilters.length === 1) {
     where.push('r.relation_type = ?');
-    params.push(relTypeFilter);
+    params.push(relTypeFilters[0]);
+  } else if (relTypeFilters.length > 1) {
+    where.push(`r.relation_type IN (${relTypeFilters.map(() => '?').join(', ')})`);
+    params.push(...relTypeFilters);
   }
   if (fromDate) {
     where.push('r.published_at >= ?');
@@ -1994,11 +2014,17 @@ async function handleListEvents(url: URL, env: ApiEnv): Promise<Response> {
   const fromDate = url.searchParams.get('from') ?? undefined;
   const toDateRaw = url.searchParams.get('to') ?? undefined;
   const toDate = toDateRaw ? toDateUpperBound(toDateRaw) : undefined;
+  const minOutletsRaw = url.searchParams.get('minOutlets');
+  const minOutlets = minOutletsRaw ? Math.max(1, Math.min(8, Number(minOutletsRaw) || 1)) : undefined;
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 30) || 30, 1), 100);
 
   const filters: string[] = [];
   const params: unknown[] = [];
 
+  if (minOutlets && minOutlets > 1) {
+    filters.push('ec.outlet_count >= ?');
+    params.push(minOutlets);
+  }
   if (fromDate) {
     filters.push('ec.last_seen >= ?');
     params.push(fromDate);
@@ -2662,6 +2688,174 @@ async function handleEventComparison(rawEventId: string, env: ApiEnv): Promise<R
   return json(payload);
 }
 
+async function handleRandomEntity(env: ApiEnv): Promise<Response> {
+  let row: { id: string } | null = null;
+  try {
+    row = await env.DB.prepare(
+      `SELECT id FROM entity
+       WHERE status = 'active' AND is_hub = 0 AND article_count BETWEEN 20 AND 1500
+       ORDER BY RANDOM() LIMIT 1`
+    ).first<{ id: string }>();
+    if (!row) {
+      row = await env.DB.prepare(
+        `SELECT id FROM entity
+         WHERE status = 'active' AND is_hub = 0
+         ORDER BY RANDOM() LIMIT 1`
+      ).first<{ id: string }>();
+    }
+  } catch {
+    row = await env.DB.prepare('SELECT id FROM entity ORDER BY RANDOM() LIMIT 1').first<{ id: string }>();
+  }
+
+  if (!row) {
+    return json({ error: 'No active entities available' }, 404);
+  }
+  return handleEntityProfile(row.id, env);
+}
+
+async function handleDivergentEvents(url: URL, env: ApiEnv): Promise<Response> {
+  const limit = Math.min(20, Math.max(1, Number(url.searchParams.get('limit') ?? 6) || 6));
+
+  let candidates: any[] = [];
+  try {
+    const res3 = await env.DB.prepare(
+      `SELECT ec.id, ec.label, ec.lead_snippet as leadSnippet,
+              ec.first_seen as firstSeen, ec.last_seen as lastSeen,
+              ec.article_count as articleCount, ec.outlet_count as outletCount,
+              ec.outlets_json as outletsJson
+       FROM event_cluster ec
+       WHERE ec.outlet_count >= 3
+         AND EXISTS (
+           SELECT 1 FROM article_cluster ac
+           JOIN claim c ON c.article_id = ac.article_id
+           WHERE ac.cluster_id = ec.id
+         )
+       ORDER BY ec.last_seen DESC, ec.outlet_count DESC
+       LIMIT 80`
+    ).all<any>();
+    candidates = res3.results ?? [];
+
+    if (candidates.length === 0) {
+      const res2 = await env.DB.prepare(
+        `SELECT ec.id, ec.label, ec.lead_snippet as leadSnippet,
+                ec.first_seen as firstSeen, ec.last_seen as lastSeen,
+                ec.article_count as articleCount, ec.outlet_count as outletCount,
+                ec.outlets_json as outletsJson
+         FROM event_cluster ec
+         WHERE ec.outlet_count >= 2
+           AND EXISTS (
+             SELECT 1 FROM article_cluster ac
+             JOIN claim c ON c.article_id = ac.article_id
+             WHERE ac.cluster_id = ec.id
+           )
+         ORDER BY ec.last_seen DESC, ec.outlet_count DESC
+         LIMIT 35`
+      ).all<any>();
+      candidates = res2.results ?? [];
+    }
+  } catch {
+    return json({ events: [] });
+  }
+
+  if (candidates.length === 0) {
+    return json({ events: [] });
+  }
+
+  const clusterIds = candidates.map((c) => String(c.id));
+  const placeholders = clusterIds.map(() => '?').join(', ');
+  const artRes = await env.DB.prepare(
+    `SELECT ac.cluster_id as clusterId, a.id, a.outlet, a.title, a.published_at as publishedAt
+     FROM article_cluster ac
+     JOIN article a ON a.id = ac.article_id
+     WHERE ac.cluster_id IN (${placeholders})
+     ORDER BY CASE WHEN a.published_at IS NULL THEN 1 ELSE 0 END, a.published_at ASC`
+  )
+    .bind(...clusterIds)
+    .all<{
+      clusterId: string;
+      id: string;
+      outlet: OutletId;
+      title: string;
+      publishedAt: string | null;
+    }>();
+
+  const articles = artRes.results ?? [];
+  const claimStore = new D1ArticleClaimStore(env.DB);
+  const claimsByArticle = await claimStore.getByArticleIds(articles.map((a) => a.id));
+
+  const articlesByCluster = new Map<string, typeof articles>();
+  for (const a of articles) {
+    const list = articlesByCluster.get(a.clusterId) ?? [];
+    list.push(a);
+    articlesByCluster.set(a.clusterId, list);
+  }
+
+  const scored: Array<{
+    hasNumberDiff: boolean;
+    lastSeen: string;
+    payload: {
+      id: string;
+      label: string;
+      leadSnippet: string | null;
+      firstSeen: string | null;
+      lastSeen: string | null;
+      articleCount: number;
+      outletCount: number;
+      outlets: OutletId[];
+      differences: ReturnType<typeof analyzeCrossOutletDifferences>;
+      headlineDifference: ReturnType<typeof analyzeCrossOutletDifferences>[number];
+    };
+  }> = [];
+
+  for (const ec of candidates) {
+    const clusterArts = articlesByCluster.get(ec.id) ?? [];
+    const byOutlet = new Map<OutletId, typeof clusterArts>();
+    for (const a of clusterArts) {
+      const list = byOutlet.get(a.outlet) ?? [];
+      list.push(a);
+      byOutlet.set(a.outlet, list);
+    }
+
+    const diffs = analyzeCrossOutletDifferences(
+      Array.from(byOutlet.entries()).map(([outlet, list]) => ({
+        outlet,
+        articleId: list[0]!.id,
+        title: list[0]!.title,
+        claims: list.flatMap((a) => claimsByArticle.get(a.id) ?? []),
+      }))
+    );
+
+    const numDiff = diffs.find((d) => d.kind === 'number_difference');
+    const hedgeDiff = diffs.find((d) => d.kind === 'hedging_difference');
+    const headlineDifference = numDiff ?? hedgeDiff;
+    if (!headlineDifference) continue;
+
+    scored.push({
+      hasNumberDiff: Boolean(numDiff),
+      lastSeen: ec.lastSeen ?? '',
+      payload: {
+        id: ec.id,
+        label: ec.label,
+        leadSnippet: ec.leadSnippet ?? null,
+        firstSeen: ec.firstSeen ?? null,
+        lastSeen: ec.lastSeen ?? null,
+        articleCount: ec.articleCount,
+        outletCount: ec.outletCount,
+        outlets: JSON.parse(ec.outletsJson || '[]'),
+        differences: diffs,
+        headlineDifference,
+      },
+    });
+  }
+
+  scored.sort((a, b) => {
+    if (a.hasNumberDiff !== b.hasNumberDiff) return a.hasNumberDiff ? -1 : 1;
+    return b.lastSeen.localeCompare(a.lastSeen);
+  });
+
+  return json({ events: scored.slice(0, limit).map((s) => s.payload) });
+}
+
 async function handleArticleClaims(articleId: string, env: ApiEnv): Promise<Response> {
   const art = await env.DB.prepare(
     'SELECT id, outlet, title, canonical_url as canonicalUrl, published_at as publishedAt FROM article WHERE id = ?'
@@ -2714,7 +2908,23 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
          (SELECT COUNT(*) FROM entity) as entities,
          (SELECT COUNT(*) FROM entity_relation) as entityRelations`
     ).first<any>();
-    return json({ ok: true, counts });
+    let activeEntities = counts?.entities ?? 0;
+    try {
+      const act = await env.DB.prepare("SELECT COUNT(*) as c FROM entity WHERE status = 'active'").first<{ c: number }>();
+      if (act && typeof act.c === 'number') activeEntities = act.c;
+    } catch {
+      // Pre-v2 schema without status column
+    }
+    const latest = await env.DB.prepare('SELECT MAX(published_at) as lastUpdatedAt FROM article').first<{
+      lastUpdatedAt: string | null;
+    }>();
+    return json({
+      ok: true,
+      counts,
+      activeEntities,
+      outlets: INDEXED_ACCREDITED_OUTLETS.length,
+      lastUpdatedAt: latest?.lastUpdatedAt ?? null,
+    });
   }
 
   if (path === '/registry/snapshot' && request.method === 'GET') {
@@ -2745,6 +2955,10 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
 
   if (path === '/entities/suggest' && request.method === 'GET') {
     return handleSuggestEntities(url, env);
+  }
+
+  if (path === '/entities/random' && request.method === 'GET') {
+    return handleRandomEntity(env);
   }
 
   if (path === '/entities' && request.method === 'GET') {
@@ -2779,6 +2993,10 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
   const entityProfileMatch = path.match(/^\/entities\/([^/]+)$/);
   if (entityProfileMatch && request.method === 'GET') {
     return handleEntityProfile(decodeURIComponent(entityProfileMatch[1]!), env);
+  }
+
+  if (path === '/events/divergent' && request.method === 'GET') {
+    return handleDivergentEvents(url, env);
   }
 
   if (path === '/events' && request.method === 'GET') {

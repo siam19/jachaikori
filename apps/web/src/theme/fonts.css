@@ -1,0 +1,63 @@
+/* Per-script Fontsource imports — Latin variable faces + Bangla static subsets */
+@import '@fontsource-variable/fraunces';
+@import '@fontsource-variable/newsreader';
+@import '@fontsource-variable/hanken-grotesk';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/tiro-bangla/400.css';
+@import '@fontsource/hind-siliguri/400.css';
+@import '@fontsource/hind-siliguri/500.css';
+@import '@fontsource/hind-siliguri/600.css';
+@import '@fontsource/noto-serif-bengali/400.css';
+@import '@fontsource/noto-serif-bengali/600.css';
+
+/* Base typography rules — ink is their words (serif), pencil is ours (sans) */
+html {
+  font-family: var(--font-ui);
+  color: var(--color-ink);
+  background-color: var(--color-paper);
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+html[lang='bn'],
+[lang='bn'] {
+  line-height: 1.72;
+}
+
+[lang='en'] {
+  line-height: 1.52;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  font-variation-settings: 'SOFT' 50;
+  text-wrap: balance;
+}
+
+.font-read,
+.ink-text {
+  font-family: var(--font-read);
+  color: var(--color-ink);
+  text-wrap: pretty;
+}
+
+.font-ui,
+.pencil-text {
+  font-family: var(--font-ui);
+  color: var(--color-pencil);
+}
+
+.font-mono-data {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.outlet-plate {
+  font-family: var(--font-ui);
+  color: var(--color-ink);
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}

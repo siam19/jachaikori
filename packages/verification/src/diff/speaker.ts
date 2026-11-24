@@ -10,6 +10,7 @@ import type {
   ClaimDiffItem,
   StoredArticleClaim,
 } from '@jachaikori/schema';
+import { toBanglaDigits } from './numbers';
 
 function displayEntityName(compiled: CompiledRegistry, entityId: string): { en: string; bn: string } {
   const ent = compiled.entityMap.get(entityId);
@@ -181,7 +182,7 @@ export function compareSpeakerAndRoles(params: {
             cardSpan: `${rp.labelEn} ${personName.en}`,
             articleSpan: `${latestTerm.validFrom}..${latestTerm.validTo ?? 'present'}`,
             explanationEn: `Card refers to ${personName.en} with the title "${rp.labelEn}" without a "former" qualifier; office records show their term was ${latestTerm.validFrom} to ${latestTerm.validTo ?? 'present'}.`,
-            explanationBn: `কার্ডে ${personName.bn}-কে "${rp.labelBn}" হিসেবে উল্লেখ করা হয়েছে; রেকর্ড অনুযায়ী তাঁর মেয়াদকাল ছিল ${latestTerm.validFrom} থেকে ${latestTerm.validTo ?? 'বর্তমান'}।`,
+            explanationBn: `কার্ডে ${personName.bn}-কে "${rp.labelBn}" হিসেবে উল্লেখ করা হয়েছে; রেকর্ড অনুযায়ী তাঁর মেয়াদকাল ছিল ${toBanglaDigits(latestTerm.validFrom)} থেকে ${latestTerm.validTo ? toBanglaDigits(latestTerm.validTo) : 'বর্তমান'}।`,
             confidence: 0.9,
           });
         }

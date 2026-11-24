@@ -23,7 +23,7 @@ import { ARTICLE_CLAIM_PROMPT_VERSION, DIFF_PROMPT_VERSION } from '../prompts';
 import { HeuristicVerificationAdapter } from '../providers/heuristic';
 import type { ClaimDiffJudge } from '../providers/types';
 import { compareDateClaims } from './dates';
-import { compareNumericClaims } from './numbers';
+import { compareNumericClaims, toBanglaDigits } from './numbers';
 import { compareSpeakerAndRoles } from './speaker';
 
 export interface ArticleClaimStore {
@@ -119,6 +119,22 @@ function summarizeSourceDiff(diffs: ClaimDiffItem[], outlet: string): EmptyState
   };
 }
 
+const DIFF_FLAG_LABELS: Record<Exclude<ClaimDiffFlag, 'match'>, { en: string; bn: string }> = {
+  mismatch_number: { en: 'numbers', bn: 'সংখ্যা' },
+  mismatch_date: { en: 'dates', bn: 'তারিখ' },
+  mismatch_speaker: { en: 'speaker attribution', bn: 'বক্তার পরিচয়' },
+  mismatch_quote: { en: 'quote wording', bn: 'উদ্ধৃতির ভাষা' },
+  hedging_shift: { en: 'certainty framing', bn: 'নিশ্চয়তার মাত্রা' },
+  missing_context: { en: 'omitted context', bn: 'বাদ পড়া প্রসঙ্গ' },
+};
+
+function formatDiffFlagLabels(flags: ClaimDiffFlag[], lang: 'en' | 'bn'): string {
+  const labels = flags
+    .filter((f): f is Exclude<ClaimDiffFlag, 'match'> => f !== 'match' && f in DIFF_FLAG_LABELS)
+    .map((f) => DIFF_FLAG_LABELS[f][lang]);
+  return labels.join(', ');
+}
+
 function summarizeOverallDiff(sources: VerificationSourceMatch[]): {
   status: OverallDiffStatus;
   summary: EmptyStateNotice;
@@ -139,23 +155,25 @@ function summarizeOverallDiff(sources: VerificationSourceMatch[]): {
   const uniqueMismatchFlags = Array.from(new Set(allMismatches.map((d) => d.flag)));
 
   if (majorMismatches.length > 0) {
-    const labelList = uniqueMismatchFlags.join(', ');
+    const labelEn = formatDiffFlagLabels(uniqueMismatchFlags, 'en');
+    const labelBn = formatDiffFlagLabels(uniqueMismatchFlags, 'bn');
     return {
       status: 'significant_differences',
       summary: {
-        en: `Notable differences detected between the card and matched accredited reporting (${labelList}). Review the side-by-side citations below.`,
-        bn: `কার্ডের দাবি ও মূলধারার প্রতিবেদনের মধ্যে উল্লেখযোগ্য পার্থক্য পাওয়া গেছে (${labelList})। নিচে প্রতিবেদনভিত্তিক তুলনা দেখুন।`,
+        en: `Notable differences detected between the card and matched accredited reporting (${labelEn}). Review the side-by-side citations below.`,
+        bn: `কার্ডের দাবি ও মূলধারার প্রতিবেদনের মধ্যে উল্লেখযোগ্য পার্থক্য পাওয়া গেছে (${labelBn})। নিচে প্রতিবেদনভিত্তিক তুলনা দেখুন।`,
       },
     };
   }
 
   if (allMismatches.length > 0) {
-    const labelList = uniqueMismatchFlags.join(', ');
+    const labelEn = formatDiffFlagLabels(uniqueMismatchFlags, 'en');
+    const labelBn = formatDiffFlagLabels(uniqueMismatchFlags, 'bn');
     return {
       status: 'minor_differences',
       summary: {
-        en: `Core topic aligns with accredited coverage, with minor framing or detail differences noted (${labelList}).`,
-        bn: `মূল বিষয়টি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ, তবে উপস্থাপনা বা তথ্যে সামান্য পার্থক্য রয়েছে (${labelList})।`,
+        en: `Core topic aligns with accredited coverage, with minor framing or detail differences noted (${labelEn}).`,
+        bn: `মূল বিষয়টি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ, তবে উপস্থাপনা বা তথ্যে সামান্য পার্থক্য রয়েছে (${labelBn})।`,
       },
     };
   }
@@ -163,8 +181,8 @@ function summarizeOverallDiff(sources: VerificationSourceMatch[]): {
   return {
     status: 'aligned',
     summary: {
-      en: `Card details align with matched coverage across ${inspected.length} accredited article(s), with no numeric, date, or speaker discrepancies detected.`,
-      bn: `কার্ডের তথ্যগুলো ${inspected.length}টি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ; সংখ্যা, তারিখ বা বক্তার কোনো অসঙ্গতি পাওয়া যায়নি।`,
+      en: `Card details align with matched coverage across ${inspected.length} accredited ${inspected.length === 1 ? 'article' : 'articles'}, with no numeric, date, or speaker discrepancies detected.`,
+      bn: `কার্ডের তথ্যগুলো ${toBanglaDigits(String(inspected.length))}টি মূলধারার প্রতিবেদনের সঙ্গে সামঞ্জস্যপূর্ণ; সংখ্যা, তারিখ বা বক্তার কোনো অসঙ্গতি পাওয়া যায়নি।`,
     },
   };
 }

@@ -35,8 +35,14 @@ const BANGLA_DIGIT_MAP: Record<string, string> = {
   '৯': '9',
 };
 
+const ASCII_TO_BANGLA_DIGITS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'] as const;
+
 export function toAsciiDigits(input: string): string {
   return input.replace(/[০-৯]/g, (ch) => BANGLA_DIGIT_MAP[ch] ?? ch);
+}
+
+export function toBanglaDigits(input: string): string {
+  return input.replace(/[0-9]/g, (ch) => ASCII_TO_BANGLA_DIGITS[Number(ch)] ?? ch);
 }
 
 function detectUnitFamily(rawNorm: string): NumericUnitFamily {

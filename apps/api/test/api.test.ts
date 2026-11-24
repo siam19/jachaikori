@@ -629,7 +629,44 @@ describe('API Worker Routes', () => {
       expect(savedRes.status).toBe(200);
       const saved = (await savedRes.json()) as any;
       expect(saved.overallDiffStatus).toBe('significant_differences');
+      expect(saved.overallDiffSummary.en).not.toContain('mismatch_number');
+      expect(saved.overallDiffSummary.bn).not.toContain('mismatch_number');
       expect(saved.sources[0].diffFlags).toContain('mismatch_number');
+
+      // 5) GET /events/divergent returns clusters with number_difference or hedging_difference
+      const divRes = await handleApiRequest(new Request('http://localhost/events/divergent?limit=6'), baseEnv);
+      expect(divRes.status).toBe(200);
+      const divJson = (await divRes.json()) as any;
+      expect(Array.isArray(divJson.events)).toBe(true);
+      expect(divJson.events.length).toBeGreaterThanOrEqual(1);
+      expect(divJson.events[0].id).toBe('clu_art-pa-1');
+      expect(['number_difference', 'hedging_difference']).toContain(divJson.events[0].headlineDifference.kind);
+
+      // 6) GET /entities/random returns a valid EntityProfile
+      const randRes = await handleApiRequest(new Request('http://localhost/entities/random'), baseEnv);
+      expect(randRes.status).toBe(200);
+      const randJson = (await randRes.json()) as any;
+      expect(randJson.id).toBeTruthy();
+      expect(randJson.stats).toBeDefined();
+
+      // 7) Comma-separated ?type= filter on GET /entities/:id/relations
+      db.exec(`
+        INSERT OR IGNORE INTO entity (id, canonical_bn, canonical_en, entity_type, status, is_hub)
+        VALUES ('ent_rel_a', 'সংস্থা ক', 'Org A', 'org', 'active', 0),
+               ('ent_rel_b', 'সংস্থা খ', 'Org B', 'org', 'active', 0);
+        INSERT INTO entity_relation (id, article_id, source_entity_id, target_entity_id, relation_type, predicate_label, source, evidence_snippet, published_at, confidence)
+        VALUES ('rel_1', 'art-pa-1', 'ent_rel_a', 'ent_rel_b', 'holds_role', 'member of', 'llm_claim', 'evidence 1', '2026-11-18T10:00:00+06:00', 0.9),
+               ('rel_2', 'art-pa-1', 'ent_rel_a', 'ent_rel_b', 'signed_deal_or_agreed', 'signed with', 'llm_claim', 'evidence 2', '2026-11-18T10:00:00+06:00', 0.9),
+               ('rel_3', 'art-pa-1', 'ent_rel_a', 'ent_rel_b', 'criticized_or_opposed', 'criticized', 'llm_claim', 'evidence 3', '2026-11-18T10:00:00+06:00', 0.9);
+      `);
+      const multiRelRes = await handleApiRequest(
+        new Request('http://localhost/entities/ent_rel_a/relations?type=holds_role,signed_deal_or_agreed'),
+        baseEnv
+      );
+      expect(multiRelRes.status).toBe(200);
+      const multiRelJson = (await multiRelRes.json()) as any;
+      const types = multiRelJson.relations.map((r: any) => r.relationType).sort();
+      expect(types).toEqual(['holds_role', 'signed_deal_or_agreed']);
     } finally {
       db.close();
     }

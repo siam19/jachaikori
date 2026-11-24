@@ -1,0 +1,218 @@
+/* The Morning Edition — Paper grain, editorial hairlines, Proof Strip & motion */
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  position: relative;
+}
+
+/* Subtle static 128px tiled paper grain (~2.2% opacity), dropped under prefers-reduced-data */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.022;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 128 128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='128' height='128' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 128px 128px;
+}
+
+@media (prefers-reduced-data: reduce) {
+  body::before {
+    display: none;
+  }
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Visible soft keyboard focus rings */
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* Soft hairlines */
+.rule-hairline {
+  border-color: var(--color-rule);
+}
+
+.rule-strong {
+  border-color: var(--color-rule-strong);
+}
+
+/* Raised clipping surface — soft warm card with generous rounded corners */
+.clipping-surface {
+  background-color: var(--color-paper-raised);
+  border: 1px solid color-mix(in oklab, var(--color-rule) 75%, transparent);
+  border-radius: var(--radius-paper);
+  box-shadow: var(--shadow-clipping);
+}
+
+.search-bar-surface {
+  background-color: var(--color-paper-raised);
+  border: 1px solid color-mix(in oklab, var(--color-rule-strong) 45%, transparent);
+  box-shadow: var(--shadow-bar);
+}
+
+.clipping-ink-rule {
+  border-inline-start: 2px solid color-mix(in oklab, var(--color-ink) 45%, transparent);
+  padding-inline-start: 0.95rem;
+}
+
+/* Soft evidence separator */
+.torn-edge {
+  position: relative;
+  border-bottom: 1px dashed color-mix(in oklab, var(--color-rule-strong) 55%, transparent);
+}
+
+/* Editorial drop cap for entity dossier bios */
+.drop-cap::first-letter {
+  font-family: var(--font-display);
+  float: left;
+  font-size: 2.75rem;
+  line-height: 0.88;
+  padding-inline-end: 0.45rem;
+  padding-top: 0.1rem;
+  color: var(--color-ink);
+}
+
+[lang='bn'].drop-cap::first-letter {
+  font-size: 2.4rem;
+  line-height: 1.05;
+}
+
+/* Proof Strip: only differing spans move, constant width prevents line reflow */
+.proof {
+  --t: 0;
+}
+
+.swap {
+  display: inline-grid;
+  vertical-align: baseline;
+  border-radius: 2px;
+  padding-inline: 0.15em;
+  text-decoration-line: underline;
+  text-decoration-style: var(--flag-line, solid);
+  text-decoration-color: var(--flag, var(--color-rust));
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.22em;
+  background-color: var(--flag-wash, transparent);
+}
+
+.swap > span {
+  grid-area: 1 / 1;
+  transition: opacity 160ms var(--ease-paper), transform 180ms var(--ease-paper);
+}
+
+.swap-card {
+  opacity: calc(1 - var(--t));
+  transform: translateY(calc(var(--t) * -0.45em));
+}
+
+.swap-reported {
+  opacity: var(--t);
+  transform: translateY(calc((1 - var(--t)) * 0.45em));
+  color: var(--flag, var(--color-ink));
+}
+
+/* Native accessible Proof Strip range scrubber */
+.scrub {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.scrub::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--color-rule-strong);
+  border-radius: 2px;
+}
+
+.scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
+  border-radius: 9999px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-paper-raised);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.scrub::-moz-range-track {
+  height: 4px;
+  background: var(--color-rule-strong);
+  border-radius: 2px;
+}
+
+.scrub::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-paper-raised);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* Press Run subtle scanning pencil line */
+@keyframes press-scan {
+  0% {
+    transform: translateY(0%);
+  }
+  50% {
+    transform: translateY(100%);
+  }
+  100% {
+    transform: translateY(0%);
+  }
+}
+
+.press-scan-line {
+  animation: press-scan 3.4s var(--ease-paper) infinite;
+}
+
+/* Event lane staggered light-up */
+@keyframes lane-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lane-stagger {
+  animation: lane-enter 280ms var(--ease-paper) backwards;
+}
+
+/* Reduced motion & forced-colors support */
+@media (prefers-reduced-motion: reduce) {
+  .swap > span {
+    transform: none !important;
+    transition: opacity 120ms linear;
+  }
+  .press-scan-line,
+  .lane-stagger {
+    animation: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .swap {
+    background-color: transparent;
+    text-decoration-color: Highlight;
+  }
+}

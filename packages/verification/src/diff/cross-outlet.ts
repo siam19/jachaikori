@@ -13,6 +13,7 @@ import type {
 import {
   formatCanonicalQuantity,
   parseQuantities,
+  toBanglaDigits,
   type NumericUnitFamily,
   type ParsedQuantity,
 } from './numbers';
@@ -80,7 +81,7 @@ export function analyzeCrossOutletDifferences(
         kind: 'consensus_number',
         outlets,
         summaryEn: `${outlets.length} outlets report the same figure (${formatted}).`,
-        summaryBn: `${outlets.length}টি সংবাদমাধ্যম একই সংখ্যা (${formatted}) উল্লেখ করেছে।`,
+        summaryBn: `${toBanglaDigits(String(outlets.length))}টি সংবাদমাধ্যম একই সংখ্যা (${toBanglaDigits(formatted)}) উল্লেখ করেছে।`,
         details: b.items.slice(0, 6).map((x) => ({
           outlet: x.outlet,
           articleId: x.articleId,

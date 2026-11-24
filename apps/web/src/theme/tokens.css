@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+
+@theme {
+  /* Morning Edition (light default) — WCAG 2.x AA verified */
+  --color-paper: #f5efe3;
+  --color-paper-raised: #fbf7ee;
+  --color-paper-sunk: #ebe3d2;
+  --color-ink: #1e1a16;
+  --color-pencil: #6b6055;
+  --color-rule: #d8ceba;
+  --color-rule-strong: #8f8472;
+  --color-sage: #3a6450;
+  --color-rust: #9c4519;
+  --color-ochre: #7f5200;
+  --color-violet: #5b4b8a;
+
+  --font-display: 'Fraunces Variable', 'Tiro Bangla', Georgia, serif;
+  --font-read: 'Newsreader Variable', 'Noto Serif Bengali', Georgia, serif;
+  --font-ui: 'Hanken Grotesk Variable', 'Hind Siliguri', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
+
+  --ease-paper: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --shadow-clipping: 0 1px 3px rgba(30, 26, 22, 0.04), 0 8px 24px rgba(30, 26, 22, 0.045);
+  --shadow-bar: 0 2px 10px rgba(30, 26, 22, 0.05), 0 14px 34px rgba(30, 26, 22, 0.06);
+  --radius-paper: 16px;
+}
+
+/* Evening Edition — follows OS preference unless overridden */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-paper: #17140f;
+    --color-paper-raised: #1f1b15;
+    --color-paper-sunk: #110f0b;
+    --color-ink: #efe7d8;
+    --color-pencil: #a99d8d;
+    --color-rule: #3a332a;
+    --color-rule-strong: #766c5d;
+    --color-sage: #8dbfa5;
+    --color-rust: #e59a6f;
+    --color-ochre: #e0b25a;
+    --color-violet: #b5a6e6;
+    --shadow-clipping: 0 1px 3px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.22);
+    --shadow-bar: 0 2px 12px rgba(0, 0, 0, 0.35), 0 14px 36px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* Explicit Evening override */
+:root[data-theme='dark'] {
+  --color-paper: #17140f;
+  --color-paper-raised: #1f1b15;
+  --color-paper-sunk: #110f0b;
+  --color-ink: #efe7d8;
+  --color-pencil: #a99d8d;
+  --color-rule: #3a332a;
+  --color-rule-strong: #766c5d;
+  --color-sage: #8dbfa5;
+  --color-rust: #e59a6f;
+  --color-ochre: #e0b25a;
+  --color-violet: #b5a6e6;
+  --shadow-clipping: 0 1px 3px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.22);
+  --shadow-bar: 0 2px 12px rgba(0, 0, 0, 0.35), 0 14px 36px rgba(0, 0, 0, 0.3);
+}
+
+/* Diff flag tokens & 12% washes (never placed directly on paper-sunk in Morning) */
+[data-flag] {
+  --flag-wash: color-mix(in oklab, var(--flag) 12%, transparent);
+}
+[data-flag='match'] {
+  --flag: var(--color-sage);
+  --flag-line: none;
+}
+[data-flag='mismatch_number'] {
+  --flag: var(--color-rust);
+  --flag-line: solid;
+}
+[data-flag='mismatch_date'] {
+  --flag: var(--color-ochre);
+  --flag-line: dashed;
+}
+[data-flag='mismatch_speaker'] {
+  --flag: var(--color-rust);
+  --flag-line: wavy;
+}
+[data-flag='mismatch_quote'] {
+  --flag: var(--color-ochre);
+  --flag-line: dotted;
+}
+[data-flag='hedging_shift'] {
+  --flag: var(--color-violet);
+  --flag-line: double;
+}
+[data-flag='missing_context'] {
+  --flag: var(--color-rust);
+  --flag-line: dotted;
+}

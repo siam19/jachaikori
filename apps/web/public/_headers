@@ -1,0 +1,19 @@
+# Cloudflare Pages headers for @jachaikori/web
+# Note: No catch-all _redirects file is used; Cloudflare Pages serves index.html automatically when 404.html is absent.
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/favicons/*
+  Cache-Control: public, max-age=2592000
+
+/sw.js
+  Cache-Control: no-cache
+
+/manifest.webmanifest
+  Cache-Control: no-cache
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: microphone=(), geolocation=()

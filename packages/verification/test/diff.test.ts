@@ -185,10 +185,26 @@ describe('Speaker Attribution, Role-Term & Full Hybrid Diff Engine', () => {
     });
 
     expect(res.overallDiffStatus).toBe('significant_differences');
+    expect(res.overallDiffSummary.en).not.toMatch(/mismatch_|hedging_shift|missing_context/);
+    expect(res.overallDiffSummary.bn).not.toMatch(/mismatch_|hedging_shift|missing_context/);
+    expect(res.overallDiffSummary.en).toContain('numbers');
+    expect(res.overallDiffSummary.bn).toContain('সংখ্যা');
     const flags = res.sources[0]?.diffFlags ?? [];
     expect(flags).toContain('mismatch_number');
     expect(flags).toContain('missing_context');
     expect(flags).toContain('hedging_shift');
+  });
+
+  test('Bangla explanations and summaries use Bangla numerals (০-৯) without mutating verbatim spans', () => {
+    const recycled = compareDateClaims({
+      cardDates: ['18 Nov 2026'],
+      articleDates: [],
+      articlePublishedAt: '2024-05-12T10:00:00+06:00',
+    });
+    expect(recycled[0]?.cardSpan).toBe('18 Nov 2026');
+    expect(recycled[0]?.explanationBn).toContain('"18 Nov 2026"');
+    expect(recycled[0]?.explanationBn).toContain('২০২৪-০৫-১২');
+    expect(recycled[0]?.explanationBn).toMatch(/[০-৯]+ দিনের ব্যবধান/);
   });
 
   test('analyzeCrossOutletDifferences finds consensus numbers, divergent figures, and hedging differences', () => {
@@ -261,7 +277,10 @@ describe('Speaker Attribution, Role-Term & Full Hybrid Diff Engine', () => {
       },
     ]);
 
-    expect(diffs.some((d) => d.kind === 'consensus_number')).toBe(true);
+    const consensus = diffs.find((d) => d.kind === 'consensus_number');
+    expect(consensus).toBeDefined();
+    expect(consensus?.summaryBn).toMatch(/^[০-৯]+টি সংবাদমাধ্যম/);
+    expect(consensus?.summaryBn).not.toMatch(/[0-9]/);
     expect(diffs.some((d) => d.kind === 'number_difference')).toBe(true);
     expect(diffs.some((d) => d.kind === 'hedging_difference')).toBe(true);
   });

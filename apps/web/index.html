@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F5EFE3" />
+    <meta
+      name="description"
+      content="Jachaikori compares news photo cards with reporting from 8 accredited outlets in Bangladesh."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Jachaikori · যাচাই করি</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('jachaikori:theme');
+          if (t === 'light' || t === 'dark') {
+            document.documentElement.setAttribute('data-theme', t);
+          }
+          var l = localStorage.getItem('jachaikori:lang');
+          if (l === 'bn' || l === 'en') {
+            document.documentElement.lang = l;
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
