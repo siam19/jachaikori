@@ -25,14 +25,23 @@ export const ENTITY_TYPE_COLORS: Record<EntityType, string> = {
 };
 
 export const RELATION_TYPE_COLORS: Record<EntityRelationType, string> = {
+  holds_role: '#14b8a6',
+  affiliated_with: '#0ea5e9',
+  part_of: '#6366f1',
+  appointed_or_elected: '#22c55e',
+  resigned_or_removed: '#ef4444',
   quoted_about: '#38bdf8',
-  resigned_from: '#ef4444',
-  legal_action: '#f59e0b',
-  criticized_or_protested: '#ec4899',
+  supported_or_endorsed: '#84cc16',
+  criticized_or_opposed: '#ec4899',
+  demanded_or_urged: '#f97316',
+  signed_deal_or_agreed: '#a855f7',
+  funded_or_invested: '#eab308',
+  regulated_or_directed: '#8b5cf6',
+  investigated_or_charged: '#f59e0b',
+  ruled_or_sentenced: '#dc2626',
   met_with: '#10b981',
-  announced_or_agreed: '#a855f7',
-  located_in: '#64748b',
-  co_occurred: '#475569',
+  diplomatic_action: '#06b6d4',
+  incident_at: '#64748b',
 };
 
 interface SimEntityNode extends SimulationNodeDatum, EntityGraphNode {}
@@ -232,14 +241,14 @@ export const EntityHypergraph: React.FC<EntityHypergraphProps> = ({
       ctx.lineTo(tgt.x, tgt.y);
       ctx.strokeStyle = isSelected || isHovered ? '#ffffff' : baseColor;
       ctx.globalAlpha =
-        isSelected || isHovered || touchesSelectedEntity ? 0.95 : link.relationType === 'co_occurred' ? 0.35 : 0.65;
+        isSelected || isHovered || touchesSelectedEntity ? 0.95 : link.relationType === 'incident_at' ? 0.45 : 0.72;
       ctx.lineWidth =
         ((isSelected || isHovered ? 3.2 : 1.1) + Math.min(4, Math.log2(link.weight + 1))) /
         Math.sqrt(scale);
       ctx.stroke();
       ctx.globalAlpha = 1;
 
-      if (isSelected || isHovered || (link.relationType !== 'co_occurred' && scale >= 0.85)) {
+      if (isSelected || isHovered || scale >= 0.85) {
         const mx = (src.x + tgt.x) / 2;
         const my = (src.y + tgt.y) / 2;
         ctx.font = '9px Inter, sans-serif';

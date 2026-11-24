@@ -105,34 +105,67 @@ describe('Reciprocal Rank Fusion (RRF)', () => {
 });
 
 describe('Temporal Alias QueryExpander', () => {
-  it('resolves role aliases within their valid date window', () => {
-    const expander = new AliasDictionaryExpander([
-      {
-        aliasNorm: 'pm',
-        aliasRaw: 'PM',
-        entityId: 'ent-tareque',
-        validFrom: '2026-02-01',
-        validTo: null,
-      },
-      {
-        aliasNorm: 'তারেক রহমান',
-        aliasRaw: 'তারেক রহমান',
-        entityId: 'ent-tareque',
-        validFrom: null,
-        validTo: null,
-      },
-      {
-        aliasNorm: 'pm',
-        aliasRaw: 'PM',
-        entityId: 'ent-hasina',
-        validFrom: '2009-01-01',
-        validTo: '2024-08-05',
-      },
-    ]);
+  it('resolves role aliases within their valid date window and enforces token boundaries & case', () => {
+    const expander = new AliasDictionaryExpander(
+      [
+        {
+          aliasNorm: 'pm',
+          aliasRaw: 'PM',
+          entityId: 'ent_role_pm',
+          requireUppercase: true,
+        },
+        {
+          aliasNorm: 'তারেক রহমান',
+          aliasRaw: 'তারেক রহমান',
+          entityId: 'ent-tareque',
+        },
+        {
+          aliasNorm: 'শেখ হাসিনা',
+          aliasRaw: 'শেখ হাসিনা',
+          entityId: 'ent-hasina',
+        },
+        {
+          aliasNorm: 'us',
+          aliasRaw: 'US',
+          entityId: 'ent-usa',
+          requireUppercase: true,
+        },
+        {
+          aliasNorm: 'যুক্তরাষ্ট্র',
+          aliasRaw: 'যুক্তরাষ্ট্র',
+          entityId: 'ent-usa',
+        },
+      ],
+      [
+        {
+          id: 'rt-tareque',
+          roleEntityId: 'ent_role_pm',
+          holderEntityId: 'ent-tareque',
+          validFrom: '2026-02-17',
+          validTo: null,
+        },
+        {
+          id: 'rt-hasina',
+          roleEntityId: 'ent_role_pm',
+          holderEntityId: 'ent-hasina',
+          validFrom: '2009-01-01',
+          validTo: '2024-08-05',
+        },
+      ]
+    );
 
     const res2026 = expander.expand('PM statement on economy', '2026-11-10');
     expect(res2026.matchedEntityIds).toEqual(['ent-tareque']);
     expect(res2026.expandedTerms).toContain('তারেক রহমান');
+
+    // Substring guard: "business" must NOT trigger "US", "development" must NOT trigger "PM"
+    const resSub = expander.expand('business development policy');
+    expect(resSub.matchedEntityIds).toEqual([]);
+    expect(resSub.expandedTerms).toEqual([]);
+
+    // Role guard: "Former PM" must NOT expand to incumbent PM
+    const resFormer = expander.expand('Former PM trial update', '2026-11-10');
+    expect(resFormer.matchedEntityIds).toEqual([]);
   });
 });
 

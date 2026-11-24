@@ -1,8 +1,10 @@
 /**
  * @file apps/api/src/index.ts
  * Cloudflare Worker API for Jachaikori:
- * - Hybrid Search (D1 Bangla FTS5 + Vectorize BGE-M3 + RRF k=60 + QueryExpander hook)
- * - Cross-Outlet Event Clusters & Similarity Graph endpoints for the Cluster Visualizer
+ * - Hybrid Search (D1 Bangla FTS5 + Vectorize BGE-M3 + RRF k=60 + isolate-cached temporal QueryExpander)
+ * - Entity Resolution v2 Registry Snapshot (`GET /registry/snapshot`) & Ad-Hoc Resolver (`POST /resolve`)
+ * - Entity Relationship Explorer & AI Knowledge Graph (`GET /entities/:id`, `/articles`, `/relations`, `/ego`, `/activity`, `/suggest`)
+ * - Cross-Outlet Event Clusters & Similarity / Event Entity Graphs
  */
 
 import {
@@ -11,15 +13,23 @@ import {
   AliasDictionaryExpander,
   type RankedChunkCandidate,
 } from '@jachaikori/retrieval';
-import { associationScore } from '@jachaikori/entities';
 import {
+  associationScore,
+  compileRegistry,
+  resolveArticle,
+  type CompiledRegistry,
+} from '@jachaikori/entities';
+import {
+  normalizeRelationType,
   SearchRequestSchema,
   type ClusterGraphResponse,
+  type Entity,
   type EntityAlias,
   type EntityGraphEdge,
   type EntityGraphNode,
   type EntityGraphResponse,
   type EntityHyperedge,
+  type EntityProfile,
   type EntityRelationEvidence,
   type EntityRelationType,
   type EntityRole,
@@ -29,6 +39,8 @@ import {
   type GraphEdge,
   type GraphNode,
   type OutletId,
+  type RegistrySnapshot,
+  type RoleTerm,
 } from '@jachaikori/schema';
 
 export interface ApiEnv {
@@ -40,15 +52,37 @@ export interface ApiEnv {
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, If-None-Match',
 };
 
-function json(data: unknown, status = 200): Response {
+const HIGH_SALIENCE_HUB_RELATIONS = new Set<string>([
+  'diplomatic_action',
+  'funded_or_invested',
+  'signed_deal_or_agreed',
+  'regulated_or_directed',
+  'holds_role',
+  'affiliated_with',
+  'part_of',
+]);
+
+interface CachedRegistryEntry {
+  version: number;
+  checkedAt: number;
+  snapshot: RegistrySnapshot;
+  compiled: CompiledRegistry;
+  expander: AliasDictionaryExpander;
+}
+
+const REGISTRY_CACHE = new WeakMap<D1Database, CachedRegistryEntry>();
+const CACHE_RECHECK_MS = 5_000;
+
+function json(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       ...CORS_HEADERS,
+      ...extraHeaders,
     },
   });
 }
@@ -56,6 +90,142 @@ function json(data: unknown, status = 200): Response {
 function makeSnippet(text: string, maxLen = 240): string {
   const clean = text.replace(/\s+/g, ' ').trim();
   return clean.length > maxLen ? `${clean.slice(0, maxLen)}…` : clean;
+}
+
+/**
+ * Loads & caches the Entity Resolution v2 registry snapshot per D1 handle,
+ * only recompiling when `registry_version` advances. Gracefully falls back on pre-0004 schemas.
+ */
+async function getCachedRegistry(db: D1Database): Promise<CachedRegistryEntry> {
+  const now = Date.now();
+  const existing = REGISTRY_CACHE.get(db);
+  if (existing && now - existing.checkedAt < CACHE_RECHECK_MS) {
+    return existing;
+  }
+
+  let dbVersion = 1;
+  try {
+    const row = await db.prepare('SELECT MAX(version) as v FROM registry_version').first<{ v: number | null }>();
+    dbVersion = Math.max(1, Number(row?.v ?? 1));
+  } catch {
+    dbVersion = 1;
+  }
+
+  if (existing && existing.version === dbVersion) {
+    existing.checkedAt = now;
+    return existing;
+  }
+
+  let entities: Entity[] = [];
+  let aliases: EntityAlias[] = [];
+  let roleTerms: RoleTerm[] = [];
+
+  try {
+    const entRes = await db
+      .prepare(
+        `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType,
+                status, source, merged_into as mergedInto, is_hub as isHub, metadata_json as metadataJson
+         FROM entity`
+      )
+      .all<any>();
+    entities = (entRes.results ?? []).map((r) => ({
+      ...r,
+      status: r.status ?? 'active',
+      source: r.source ?? 'seed',
+      isHub: Boolean(r.isHub),
+    }));
+  } catch {
+    const entRes = await db
+      .prepare(
+        `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType, metadata_json as metadataJson
+         FROM entity`
+      )
+      .all<any>();
+    entities = (entRes.results ?? []).map((r) => ({ ...r, status: 'active', source: 'seed', isHub: false }));
+  }
+
+  try {
+    const aliasRes = await db
+      .prepare(
+        `SELECT alias_norm as aliasNorm, alias_raw as aliasRaw, entity_id as entityId,
+                valid_from as validFrom, valid_to as validTo, kind, require_uppercase as requireUppercase, source
+         FROM entity_alias`
+      )
+      .all<any>();
+    aliases = (aliasRes.results ?? []).map((r) => ({
+      ...r,
+      requireUppercase: Boolean(r.requireUppercase),
+    }));
+  } catch {
+    try {
+      const aliasRes = await db
+        .prepare(
+          `SELECT alias_norm as aliasNorm, alias_raw as aliasRaw, entity_id as entityId,
+                  valid_from as validFrom, valid_to as validTo
+           FROM entity_alias`
+        )
+        .all<any>();
+      aliases = aliasRes.results ?? [];
+    } catch {
+      aliases = [];
+    }
+  }
+
+  try {
+    const rtRes = await db
+      .prepare(
+        `SELECT id, role_entity_id as roleEntityId, holder_entity_id as holderEntityId,
+                valid_from as validFrom, valid_to as validTo, source_url as sourceUrl
+         FROM role_term`
+      )
+      .all<RoleTerm>();
+    roleTerms = rtRes.results ?? [];
+  } catch {
+    roleTerms = [];
+  }
+
+  const snapshot: RegistrySnapshot = {
+    version: dbVersion,
+    generatedAt: new Date(now).toISOString(),
+    entities,
+    aliases,
+    roleTerms,
+  };
+  const compiled = compileRegistry(snapshot);
+  const expander = new AliasDictionaryExpander(aliases, roleTerms);
+
+  const entry: CachedRegistryEntry = {
+    version: dbVersion,
+    checkedAt: now,
+    snapshot,
+    compiled,
+    expander,
+  };
+  REGISTRY_CACHE.set(db, entry);
+  return entry;
+}
+
+/**
+ * Resolves `entity.merged_into` chain (max 5 hops) so legacy/merged entity URLs redirect seamlessly.
+ */
+async function resolveCanonicalEntityId(
+  db: D1Database,
+  rawEntityId: string
+): Promise<{ id: string; redirectedFrom?: string }> {
+  let cur = rawEntityId;
+  for (let hop = 0; hop < 5; hop++) {
+    try {
+      const row = await db
+        .prepare('SELECT id, merged_into as mergedInto FROM entity WHERE id = ?')
+        .bind(cur)
+        .first<{ id: string; mergedInto: string | null }>();
+      if (!row || !row.mergedInto || row.mergedInto === cur) break;
+      cur = row.mergedInto;
+    } catch {
+      break;
+    }
+  }
+  return cur !== rawEntityId ? { id: cur, redirectedFrom: rawEntityId } : { id: cur };
 }
 
 async function runKeywordSearch(
@@ -212,20 +382,8 @@ async function handleSearch(req: Request, env: ApiEnv): Promise<Response> {
   }
 
   const params = parsed.data;
-  let aliases: EntityAlias[] = [];
-  try {
-    const aliasRes = await env.DB.prepare(
-      `SELECT alias_norm as aliasNorm, alias_raw as aliasRaw, entity_id as entityId,
-              valid_from as validFrom, valid_to as validTo
-       FROM entity_alias`
-    ).all<EntityAlias>();
-    aliases = aliasRes.results ?? [];
-  } catch {
-    aliases = [];
-  }
-
-  const expander = new AliasDictionaryExpander(aliases);
-  const expansion = expander.expand(params.query, params.toDate);
+  const cached = await getCachedRegistry(env.DB);
+  const expansion = cached.expander.expand(params.query, params.toDate);
 
   const ftsQuery = buildFtsMatchQuery(
     expansion.expandedTerms.length > 0
@@ -262,10 +420,75 @@ async function handleSearch(req: Request, env: ApiEnv): Promise<Response> {
   return json({
     query: params.query,
     expandedTerms: expansion.expandedTerms,
+    matchedEntityIds: expansion.matchedEntityIds,
     mode: params.mode,
     fusionK,
     latencyMs: Date.now() - startedAt,
     hits,
+  });
+}
+
+async function handleRegistrySnapshot(req: Request, env: ApiEnv): Promise<Response> {
+  const cached = await getCachedRegistry(env.DB);
+  const etag = `"v${cached.version}"`;
+  if (req.headers.get('If-None-Match') === etag) {
+    return new Response(null, {
+      status: 304,
+      headers: { ETag: etag, ...CORS_HEADERS },
+    });
+  }
+  return json(cached.snapshot, 200, {
+    ETag: etag,
+    'Cache-Control': 'public, max-age=60',
+  });
+}
+
+async function handleAdHocResolve(req: Request, env: ApiEnv): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return json({ error: 'Invalid JSON request body' }, 400);
+  }
+
+  const title = typeof body.title === 'string' ? body.title : typeof body.text === 'string' ? body.text : '';
+  const lead = typeof body.lead === 'string' ? body.lead : null;
+  const cleanText = typeof body.cleanText === 'string' ? body.cleanText : null;
+  const publishedAt = typeof body.publishedAt === 'string' ? body.publishedAt : new Date().toISOString();
+  const emitUnlinked = Boolean(body.emitUnlinked ?? false);
+
+  if (!title.trim() && !cleanText?.trim()) {
+    return json({ error: 'Provide `text` or `title` to resolve' }, 400);
+  }
+
+  const cached = await getCachedRegistry(env.DB);
+  const result = resolveArticle(
+    {
+      id: 'adhoc',
+      title: title || '',
+      lead,
+      cleanText,
+      publishedAt,
+    },
+    cached.compiled,
+    { emitUnlinked }
+  );
+
+  return json({
+    registryVersion: cached.version,
+    resolverVersion: result.resolverVersion,
+    mentions: result.mentions.map((m) => {
+      const ent = cached.compiled.entityMap.get(m.entityId);
+      return {
+        ...m,
+        canonicalBn: ent?.canonicalBn ?? null,
+        canonicalEn: ent?.canonicalEn ?? null,
+        entityType: ent?.entityType ?? null,
+        isHub: Boolean(ent?.isHub),
+      };
+    }),
+    relations: result.relations,
+    unlinked: result.unlinked,
   });
 }
 
@@ -275,7 +498,10 @@ async function handleListClusters(url: URL, env: ApiEnv): Promise<Response> {
   const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0));
   const q = url.searchParams.get('q')?.trim() ?? '';
   const outlet = url.searchParams.get('outlet')?.trim() ?? '';
-  const sort = url.searchParams.get('sort') === 'recent' ? 'last_seen DESC, outlet_count DESC' : 'outlet_count DESC, last_seen DESC';
+  const sort =
+    url.searchParams.get('sort') === 'recent'
+      ? 'last_seen DESC, outlet_count DESC'
+      : 'outlet_count DESC, last_seen DESC';
 
   const where: string[] = ['outlet_count >= ?'];
   const params: unknown[] = [minOutlets];
@@ -435,45 +661,81 @@ async function buildEntityHypergraphPayload(
   let relRows: any[] = [];
 
   if (opts.centerEntityId) {
-    const res = await db
-      .prepare(
-        `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
-                r.relation_type as relationType, r.evidence_snippet as snippet, r.published_at as publishedAt,
-                a.title, a.outlet, a.canonical_url as canonicalUrl
-         FROM entity_relation r
-         JOIN article a ON a.id = r.article_id
-         WHERE r.source_entity_id = ? OR r.target_entity_id = ?
-         ORDER BY r.published_at DESC
-         LIMIT ?`
-      )
-      .bind(opts.centerEntityId, opts.centerEntityId, maxRelations)
-      .all<any>();
-    relRows = res.results ?? [];
+    try {
+      const res = await db
+        .prepare(
+          `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+                  r.relation_type as relationType, r.predicate_label as predicateLabel, r.source,
+                  r.evidence_snippet as snippet, r.published_at as publishedAt,
+                  a.title, a.outlet, a.canonical_url as canonicalUrl
+           FROM entity_relation r
+           JOIN article a ON a.id = r.article_id
+           WHERE r.source_entity_id = ? OR r.target_entity_id = ?
+           ORDER BY CASE WHEN r.source = 'llm_claim' THEN 0 ELSE 1 END, r.published_at DESC
+           LIMIT ?`
+        )
+        .bind(opts.centerEntityId, opts.centerEntityId, maxRelations)
+        .all<any>();
+      relRows = res.results ?? [];
+    } catch {
+      const res = await db
+        .prepare(
+          `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+                  r.relation_type as relationType, r.evidence_snippet as snippet, r.published_at as publishedAt,
+                  a.title, a.outlet, a.canonical_url as canonicalUrl
+           FROM entity_relation r
+           JOIN article a ON a.id = r.article_id
+           WHERE r.source_entity_id = ? OR r.target_entity_id = ?
+           ORDER BY r.published_at DESC
+           LIMIT ?`
+        )
+        .bind(opts.centerEntityId, opts.centerEntityId, maxRelations)
+        .all<any>();
+      relRows = res.results ?? [];
+    }
   } else if (opts.articleIds && opts.articleIds.length > 0) {
     const placeholders = opts.articleIds.map(() => '?').join(',');
-    const res = await db
-      .prepare(
-        `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
-                r.relation_type as relationType, r.evidence_snippet as snippet, r.published_at as publishedAt,
-                a.title, a.outlet, a.canonical_url as canonicalUrl
-         FROM entity_relation r
-         JOIN article a ON a.id = r.article_id
-         WHERE r.article_id IN (${placeholders})
-         ORDER BY r.published_at DESC
-         LIMIT ?`
-      )
-      .bind(...opts.articleIds, maxRelations)
-      .all<any>();
-    relRows = res.results ?? [];
+    try {
+      const res = await db
+        .prepare(
+          `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+                  r.relation_type as relationType, r.predicate_label as predicateLabel, r.source,
+                  r.evidence_snippet as snippet, r.published_at as publishedAt,
+                  a.title, a.outlet, a.canonical_url as canonicalUrl
+           FROM entity_relation r
+           JOIN article a ON a.id = r.article_id
+           WHERE r.article_id IN (${placeholders})
+           ORDER BY r.published_at DESC
+           LIMIT ?`
+        )
+        .bind(...opts.articleIds, maxRelations)
+        .all<any>();
+      relRows = res.results ?? [];
+    } catch {
+      const res = await db
+        .prepare(
+          `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+                  r.relation_type as relationType, r.evidence_snippet as snippet, r.published_at as publishedAt,
+                  a.title, a.outlet, a.canonical_url as canonicalUrl
+           FROM entity_relation r
+           JOIN article a ON a.id = r.article_id
+           WHERE r.article_id IN (${placeholders})
+           ORDER BY r.published_at DESC
+           LIMIT ?`
+        )
+        .bind(...opts.articleIds, maxRelations)
+        .all<any>();
+      relRows = res.results ?? [];
+    }
   }
 
-  // Aggregate pairwise relations by (source, target, relationType)
   const edgeAgg = new Map<
     string,
     {
       source: string;
       target: string;
       relationType: EntityRelationType;
+      predicateLabels: Set<string>;
       weight: number;
       evidence: EntityRelationEvidence[];
       articleIds: Set<string>;
@@ -484,20 +746,24 @@ async function buildEntityHypergraphPayload(
   const relevantArticleIds = new Set<string>(opts.articleIds ?? []);
 
   for (const r of relRows) {
+    const normRel = normalizeRelationType(r.relationType);
+    if (!normRel) continue;
     relevantArticleIds.add(r.articleId);
-    const key = `${r.sourceId}|${r.targetId}|${r.relationType}`;
+    const key = `${r.sourceId}|${r.targetId}|${normRel}`;
     let agg = edgeAgg.get(key);
     if (!agg) {
       agg = {
         source: r.sourceId,
         target: r.targetId,
-        relationType: r.relationType as EntityRelationType,
+        relationType: normRel,
+        predicateLabels: new Set<string>(),
         weight: 0,
         evidence: [],
         articleIds: new Set<string>(),
       };
       edgeAgg.set(key, agg);
     }
+    if (r.predicateLabel) agg.predicateLabels.add(String(r.predicateLabel));
     if (!agg.articleIds.has(r.articleId)) {
       agg.articleIds.add(r.articleId);
       agg.weight++;
@@ -509,7 +775,9 @@ async function buildEntityHypergraphPayload(
           publishedAt: r.publishedAt ?? null,
           canonicalUrl: r.canonicalUrl,
           snippet: r.snippet,
-          relationType: r.relationType as EntityRelationType,
+          relationType: normRel,
+          predicateLabel: r.predicateLabel ?? null,
+          source: r.source ?? 'deterministic',
         });
       }
     }
@@ -521,7 +789,6 @@ async function buildEntityHypergraphPayload(
     }
   }
 
-  // Cap ego graph to top 24 neighbors so ForceGraph remains legible
   let allowedEntityIds: Set<string> | null = null;
   if (opts.centerEntityId) {
     const topNeighbors = Array.from(neighborScores.entries())
@@ -545,12 +812,12 @@ async function buildEntityHypergraphPayload(
       source: agg.source,
       target: agg.target,
       relationType: agg.relationType,
+      predicateLabels: Array.from(agg.predicateLabels).slice(0, 5),
       weight: agg.weight,
       evidence: agg.evidence,
     });
   }
 
-  // Also include entities mentioned in scoped cluster articles (even single-entity articles)
   const scopedArticles = Array.from(relevantArticleIds).slice(0, 40);
   const mentionMapByEntity = new Map<string, { articles: Set<string>; roles: Set<EntityRole> }>();
   const hyperedgeMap = new Map<string, EntityHyperedge>();
@@ -604,22 +871,40 @@ async function buildEntityHypergraphPayload(
   const nodes: EntityGraphNode[] = [];
   if (allNodeIds.length > 0) {
     const ph = allNodeIds.map(() => '?').join(',');
-    const entityRows = await db
-      .prepare(
-        `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
-         FROM entity
-         WHERE id IN (${ph})`
-      )
-      .bind(...allNodeIds)
-      .all<any>();
+    let entityRows: any[] = [];
+    try {
+      const res = await db
+        .prepare(
+          `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType,
+                  is_hub as isHub, short_tagline_bn as shortTaglineBn, short_tagline_en as shortTaglineEn
+           FROM entity
+           WHERE id IN (${ph})`
+        )
+        .bind(...allNodeIds)
+        .all<any>();
+      entityRows = res.results ?? [];
+    } catch {
+      const res = await db
+        .prepare(
+          `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
+           FROM entity
+           WHERE id IN (${ph})`
+        )
+        .bind(...allNodeIds)
+        .all<any>();
+      entityRows = res.results ?? [];
+    }
 
-    for (const er of entityRows.results ?? []) {
+    for (const er of entityRows) {
       const stat = mentionMapByEntity.get(er.id);
       nodes.push({
         id: er.id,
         canonicalBn: er.canonicalBn ?? null,
         canonicalEn: er.canonicalEn ?? null,
         entityType: er.entityType as EntityType,
+        isHub: Boolean(er.isHub),
+        shortTaglineBn: er.shortTaglineBn ?? null,
+        shortTaglineEn: er.shortTaglineEn ?? null,
         mentionCount: Math.max(1, stat?.articles.size ?? 1),
         roles: stat ? Array.from(stat.roles) : [],
         isCenter: opts.centerEntityId ? er.id === opts.centerEntityId : undefined,
@@ -647,7 +932,9 @@ async function buildEntityHypergraphPayload(
 async function handleListEntities(url: URL, env: ApiEnv): Promise<Response> {
   const q = url.searchParams.get('q')?.trim() ?? '';
   const type = url.searchParams.get('type')?.trim() ?? '';
+  const includeHubs = url.searchParams.get('includeHubs') !== 'false';
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 50)));
+  const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0));
 
   const where: string[] = [];
   const params: unknown[] = [];
@@ -663,9 +950,47 @@ async function handleListEntities(url: URL, env: ApiEnv): Promise<Response> {
     params.push(`%${q}%`, `%${q}%`, `%${q}%`);
   }
 
-  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  params.push(limit);
+  // Fast path using v2 precomputed `entity.article_count` & `status = 'active'` (avoids 1M-row GROUP BY!)
+  try {
+    const v2Where = ["e.status = 'active'", ...where];
+    if (!includeHubs) v2Where.push('e.is_hub = 0');
+    const hasPrecomputed = await env.DB.prepare(
+      "SELECT 1 as ok FROM entity WHERE status = 'active' AND article_count > 0 LIMIT 1"
+    ).first<{ ok: number }>();
 
+    if (hasPrecomputed) {
+      const rows = await env.DB.prepare(
+        `SELECT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn,
+                e.entity_type as entityType, e.is_hub as isHub,
+                e.short_tagline_bn as shortTaglineBn, e.short_tagline_en as shortTaglineEn,
+                e.article_count as articleCount, e.event_count as eventCount
+         FROM entity e
+         WHERE ${v2Where.join(' AND ')} AND e.article_count > 0
+         ORDER BY e.article_count DESC, e.event_count DESC
+         LIMIT ? OFFSET ?`
+      )
+        .bind(...params, limit, offset)
+        .all<any>();
+
+      const entities: EntitySummary[] = (rows.results ?? []).map((r) => ({
+        id: r.id,
+        canonicalBn: r.canonicalBn ?? null,
+        canonicalEn: r.canonicalEn ?? null,
+        entityType: r.entityType as EntityType,
+        isHub: Boolean(r.isHub),
+        shortTaglineBn: r.shortTaglineBn ?? null,
+        shortTaglineEn: r.shortTaglineEn ?? null,
+        articleCount: r.articleCount,
+        eventCount: r.eventCount ?? 0,
+        relationCount: 0,
+      }));
+      return json({ entities });
+    }
+  } catch {
+    // Fall through to legacy live GROUP BY on pre-0004 schemas
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
   const rows = await env.DB.prepare(
     `SELECT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn,
             e.entity_type as entityType,
@@ -676,9 +1001,9 @@ async function handleListEntities(url: URL, env: ApiEnv): Promise<Response> {
      GROUP BY e.id
      HAVING articleCount > 0
      ORDER BY articleCount DESC
-     LIMIT ?`
+     LIMIT ? OFFSET ?`
   )
-    .bind(...params)
+    .bind(...params, limit, offset)
     .all<any>();
 
   const entities: EntitySummary[] = (rows.results ?? []).map((r) => ({
@@ -693,7 +1018,473 @@ async function handleListEntities(url: URL, env: ApiEnv): Promise<Response> {
   return json({ entities });
 }
 
-async function handleEntityGraph(entityId: string, env: ApiEnv): Promise<Response> {
+/**
+ * Full Entity Profile / AI Knowledge Graph Dossier (`GET /entities/:id`).
+ */
+async function handleEntityProfile(rawEntityId: string, env: ApiEnv): Promise<Response> {
+  const { id: entityId, redirectedFrom } = await resolveCanonicalEntityId(env.DB, rawEntityId);
+
+  let entRow: any = null;
+  try {
+    entRow = await env.DB.prepare(
+      `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType,
+              status, source, is_hub as isHub,
+              short_tagline_bn as shortTaglineBn, short_tagline_en as shortTaglineEn,
+              description_bn as descriptionBn, description_en as descriptionEn,
+              description_sources_json as descriptionSourcesJson, description_updated_at as descriptionUpdatedAt,
+              article_count as articleCount, event_count as eventCount,
+              first_seen as firstSeen, last_seen as lastSeen
+       FROM entity WHERE id = ?`
+    )
+      .bind(entityId)
+      .first<any>();
+  } catch {
+    entRow = await env.DB.prepare(
+      `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
+       FROM entity WHERE id = ?`
+    )
+      .bind(entityId)
+      .first<any>();
+  }
+
+  if (!entRow) {
+    return json({ error: 'Entity not found' }, 404);
+  }
+
+  // Aliases
+  let aliases: Array<{ aliasRaw: string; kind: any }> = [];
+  try {
+    const aRes = await env.DB.prepare(
+      'SELECT alias_raw as aliasRaw, kind FROM entity_alias WHERE entity_id = ? ORDER BY alias_raw ASC LIMIT 40'
+    )
+      .bind(entityId)
+      .all<any>();
+    aliases = aRes.results ?? [];
+  } catch {
+    const aRes = await env.DB.prepare(
+      'SELECT alias_raw as aliasRaw FROM entity_alias WHERE entity_id = ? LIMIT 40'
+    )
+      .bind(entityId)
+      .all<any>();
+    aliases = (aRes.results ?? []).map((r) => ({ aliasRaw: r.aliasRaw, kind: null }));
+  }
+
+  // Role terms (both offices held by this person and historical holders if this entity is a role)
+  let roleTerms: EntityProfile['roleTerms'] = [];
+  try {
+    const rtRes = await env.DB.prepare(
+      `SELECT rt.id, rt.role_entity_id as roleEntityId,
+              re.canonical_bn as roleNameBn, re.canonical_en as roleNameEn,
+              rt.holder_entity_id as holderEntityId,
+              he.canonical_bn as holderNameBn, he.canonical_en as holderNameEn,
+              rt.valid_from as validFrom, rt.valid_to as validTo
+       FROM role_term rt
+       LEFT JOIN entity re ON re.id = rt.role_entity_id
+       LEFT JOIN entity he ON he.id = rt.holder_entity_id
+       WHERE rt.holder_entity_id = ? OR rt.role_entity_id = ?
+       ORDER BY rt.valid_from DESC`
+    )
+      .bind(entityId, entityId)
+      .all<any>();
+    roleTerms = (rtRes.results ?? []).map((r) => ({
+      id: r.id,
+      roleEntityId: r.roleEntityId,
+      roleNameBn: r.roleNameBn ?? null,
+      roleNameEn: r.roleNameEn ?? null,
+      holderEntityId: r.holderEntityId,
+      holderNameBn: r.holderNameBn ?? null,
+      holderNameEn: r.holderNameEn ?? null,
+      validFrom: r.validFrom,
+      validTo: r.validTo ?? null,
+    }));
+  } catch {
+    roleTerms = [];
+  }
+
+  // Resolve citing article IDs for description
+  let descriptionSources: EntityProfile['descriptionSources'] = [];
+  if (entRow.descriptionSourcesJson) {
+    try {
+      const sourceIds = (JSON.parse(entRow.descriptionSourcesJson) as string[]).slice(0, 10);
+      if (sourceIds.length > 0) {
+        const ph = sourceIds.map(() => '?').join(',');
+        const srcRows = await env.DB.prepare(
+          `SELECT id as articleId, title, outlet, published_at as publishedAt, canonical_url as canonicalUrl
+           FROM article WHERE id IN (${ph})`
+        )
+          .bind(...sourceIds)
+          .all<any>();
+        descriptionSources = (srcRows.results ?? []).map((s) => ({
+          articleId: s.articleId,
+          title: s.title,
+          outlet: s.outlet as OutletId,
+          publishedAt: s.publishedAt ?? null,
+          canonicalUrl: s.canonicalUrl,
+        }));
+      }
+    } catch {
+      descriptionSources = [];
+    }
+  }
+
+  const relCountRow = await env.DB.prepare(
+    'SELECT COUNT(*) as c FROM entity_relation WHERE source_entity_id = ? OR target_entity_id = ?'
+  )
+    .bind(entityId, entityId)
+    .first<{ c: number }>();
+
+  let articleCount = Number(entRow.articleCount ?? 0);
+  if (articleCount === 0) {
+    const acRow = await env.DB.prepare('SELECT COUNT(DISTINCT article_id) as c FROM article_entity WHERE entity_id = ?')
+      .bind(entityId)
+      .first<{ c: number }>();
+    articleCount = Number(acRow?.c ?? 0);
+  }
+
+  let eventCount = Number(entRow.eventCount ?? 0);
+  if (eventCount === 0) {
+    const ecRow = await env.DB.prepare('SELECT COUNT(DISTINCT event_id) as c FROM event_entity WHERE entity_id = ?')
+      .bind(entityId)
+      .first<{ c: number }>();
+    eventCount = Number(ecRow?.c ?? 0);
+  }
+
+  const profile: EntityProfile = {
+    id: entRow.id,
+    canonicalBn: entRow.canonicalBn ?? null,
+    canonicalEn: entRow.canonicalEn ?? null,
+    entityType: entRow.entityType as EntityType,
+    status: (entRow.status ?? 'active') as EntityProfile['status'],
+    source: (entRow.source ?? 'seed') as EntityProfile['source'],
+    isHub: Boolean(entRow.isHub),
+    ...(redirectedFrom ? { redirectedFrom } : {}),
+    shortTaglineBn: entRow.shortTaglineBn ?? null,
+    shortTaglineEn: entRow.shortTaglineEn ?? null,
+    descriptionBn: entRow.descriptionBn ?? null,
+    descriptionEn: entRow.descriptionEn ?? null,
+    descriptionUpdatedAt: entRow.descriptionUpdatedAt ?? null,
+    descriptionSources,
+    aliases,
+    roleTerms,
+    stats: {
+      articleCount,
+      eventCount,
+      relationCount: Number(relCountRow?.c ?? 0),
+      firstSeen: entRow.firstSeen ?? null,
+      lastSeen: entRow.lastSeen ?? null,
+    },
+  };
+
+  return json(profile);
+}
+
+/**
+ * Paginated articles mentioning an entity (`GET /entities/:id/articles?with=&role=&from=&to=&sort=&limit=&offset=`).
+ */
+async function handleEntityArticles(rawEntityId: string, url: URL, env: ApiEnv): Promise<Response> {
+  const { id: entityId, redirectedFrom } = await resolveCanonicalEntityId(env.DB, rawEntityId);
+  const exists = await env.DB.prepare('SELECT id FROM entity WHERE id = ?').bind(entityId).first<{ id: string }>();
+  if (!exists) return json({ error: 'Entity not found' }, 404);
+
+  const withEntityRaw = url.searchParams.get('with')?.trim() || undefined;
+  const withEntityId = withEntityRaw ? (await resolveCanonicalEntityId(env.DB, withEntityRaw)).id : undefined;
+  const role = url.searchParams.get('role')?.trim() || undefined;
+  const fromDate = url.searchParams.get('from')?.trim() || undefined;
+  const toDateRaw = url.searchParams.get('to')?.trim() || undefined;
+  const toDate = toDateRaw ? toDateUpperBound(toDateRaw) : undefined;
+  const sort = url.searchParams.get('sort') === 'salience' ? 'salience' : 'recent';
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 25)));
+  const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0));
+
+  const where: string[] = ['ae.entity_id = ?'];
+  const params: unknown[] = [entityId];
+  let joinExtra = '';
+
+  if (withEntityId && withEntityId !== entityId) {
+    joinExtra = 'JOIN article_entity ae2 ON ae2.article_id = a.id AND ae2.entity_id = ?';
+    params.unshift(withEntityId);
+  }
+  if (role) {
+    where.push('ae.role = ?');
+    params.push(role);
+  }
+  if (fromDate) {
+    where.push('a.published_at >= ?');
+    params.push(fromDate);
+  }
+  if (toDate) {
+    where.push('a.published_at <= ?');
+    params.push(toDate);
+  }
+
+  const whereSql = where.join(' AND ');
+  let total = 0;
+  if (!withEntityId && !role && !fromDate && !toDate) {
+    try {
+      const preRow = await env.DB.prepare('SELECT article_count as total FROM entity WHERE id = ?')
+        .bind(entityId)
+        .first<{ total: number }>();
+      total = Number(preRow?.total ?? 0);
+    } catch {
+      total = 0;
+    }
+  }
+  if (total === 0) {
+    const countRow = await env.DB.prepare(
+      `SELECT COUNT(DISTINCT a.id) as total
+       FROM article_entity ae
+       JOIN article a ON a.id = ae.article_id
+       ${joinExtra}
+       WHERE ${whereSql}`
+    )
+      .bind(...params)
+      .first<{ total: number }>();
+    total = Number(countRow?.total ?? 0);
+  }
+
+  let rows: any[] = [];
+  try {
+    const orderSql =
+      sort === 'salience'
+        ? 'ae.in_headline DESC, ae.salience DESC, a.published_at DESC'
+        : 'a.published_at DESC, ae.in_headline DESC';
+    const res = await env.DB.prepare(
+      `SELECT DISTINCT a.id, a.outlet, a.title, a.lead, a.canonical_url as canonicalUrl,
+              a.published_at as publishedAt, ae.role, ae.surface_form as surfaceForm,
+              ae.in_headline as inHeadline, ae.mention_count as mentionCount, ae.salience,
+              ac.cluster_id as clusterId
+       FROM article_entity ae
+       JOIN article a ON a.id = ae.article_id
+       ${joinExtra}
+       LEFT JOIN article_cluster ac ON ac.article_id = a.id
+       WHERE ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT ? OFFSET ?`
+    )
+      .bind(...params, limit, offset)
+      .all<any>();
+    rows = res.results ?? [];
+  } catch {
+    const res = await env.DB.prepare(
+      `SELECT DISTINCT a.id, a.outlet, a.title, a.lead, a.canonical_url as canonicalUrl,
+              a.published_at as publishedAt, ae.role, ae.surface_form as surfaceForm,
+              ac.cluster_id as clusterId
+       FROM article_entity ae
+       JOIN article a ON a.id = ae.article_id
+       ${joinExtra}
+       LEFT JOIN article_cluster ac ON ac.article_id = a.id
+       WHERE ${whereSql}
+       ORDER BY a.published_at DESC
+       LIMIT ? OFFSET ?`
+    )
+      .bind(...params, limit, offset)
+      .all<any>();
+    rows = res.results ?? [];
+  }
+
+  return json({
+    entityId,
+    ...(redirectedFrom ? { redirectedFrom } : {}),
+    withEntityId: withEntityId ?? null,
+    total,
+    articles: rows.map((r) => ({
+      id: r.id,
+      outlet: r.outlet,
+      title: r.title,
+      lead: r.lead ?? null,
+      canonicalUrl: r.canonicalUrl,
+      publishedAt: r.publishedAt ?? null,
+      role: r.role,
+      surfaceForm: r.surfaceForm,
+      inHeadline: Boolean(r.inHeadline),
+      mentionCount: Number(r.mentionCount ?? 1),
+      salience: Number(r.salience ?? 0.5),
+      clusterId: r.clusterId ?? null,
+    })),
+  });
+}
+
+/**
+ * Aggregated directional typed relationships for an entity (`GET /entities/:id/relations`).
+ */
+async function handleEntityRelations(rawEntityId: string, url: URL, env: ApiEnv): Promise<Response> {
+  const { id: entityId, redirectedFrom } = await resolveCanonicalEntityId(env.DB, rawEntityId);
+  const exists = await env.DB.prepare('SELECT id FROM entity WHERE id = ?').bind(entityId).first<{ id: string }>();
+  if (!exists) return json({ error: 'Entity not found' }, 404);
+
+  const relTypeFilter = url.searchParams.get('type')?.trim() || undefined;
+  const sourceFilter = url.searchParams.get('source')?.trim() || undefined;
+  const fromDate = url.searchParams.get('from')?.trim() || undefined;
+  const toDateRaw = url.searchParams.get('to')?.trim() || undefined;
+  const toDate = toDateRaw ? toDateUpperBound(toDateRaw) : undefined;
+  const includeHubs = url.searchParams.get('includeHubs') === 'true';
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 40)));
+
+  const where: string[] = ['(r.source_entity_id = ? OR r.target_entity_id = ?)'];
+  const params: unknown[] = [entityId, entityId];
+  if (relTypeFilter) {
+    where.push('r.relation_type = ?');
+    params.push(relTypeFilter);
+  }
+  if (fromDate) {
+    where.push('r.published_at >= ?');
+    params.push(fromDate);
+  }
+  if (toDate) {
+    where.push('r.published_at <= ?');
+    params.push(toDate);
+  }
+
+  let rows: any[] = [];
+  try {
+    const v2Where = [...where, "other.status = 'active'"];
+    const v2Params = [...params];
+    if (sourceFilter === 'llm_claim' || sourceFilter === 'deterministic') {
+      v2Where.push('r.source = ?');
+      v2Params.push(sourceFilter);
+    }
+    const res = await env.DB.prepare(
+      `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+              r.relation_type as relationType, r.predicate_label as predicateLabel, r.source,
+              r.evidence_snippet as snippet, r.published_at as publishedAt, r.confidence,
+              a.title, a.outlet, a.canonical_url as canonicalUrl,
+              other.id as otherId, other.canonical_bn as otherBn, other.canonical_en as otherEn,
+              other.entity_type as otherType, other.is_hub as otherIsHub,
+              other.short_tagline_bn as otherTaglineBn, other.short_tagline_en as otherTaglineEn
+       FROM entity_relation r
+       JOIN article a ON a.id = r.article_id
+       JOIN entity other ON other.id = CASE WHEN r.source_entity_id = ? THEN r.target_entity_id ELSE r.source_entity_id END
+       WHERE ${v2Where.join(' AND ')}
+       ORDER BY CASE WHEN r.source = 'llm_claim' THEN 0 ELSE 1 END, r.published_at DESC
+       LIMIT 1500`
+    )
+      .bind(entityId, ...v2Params)
+      .all<any>();
+    rows = res.results ?? [];
+  } catch {
+    const res = await env.DB.prepare(
+      `SELECT r.article_id as articleId, r.source_entity_id as sourceId, r.target_entity_id as targetId,
+              r.relation_type as relationType, r.evidence_snippet as snippet, r.published_at as publishedAt, r.confidence,
+              a.title, a.outlet, a.canonical_url as canonicalUrl,
+              other.id as otherId, other.canonical_bn as otherBn, other.canonical_en as otherEn,
+              other.entity_type as otherType
+       FROM entity_relation r
+       JOIN article a ON a.id = r.article_id
+       JOIN entity other ON other.id = CASE WHEN r.source_entity_id = ? THEN r.target_entity_id ELSE r.source_entity_id END
+       WHERE ${where.join(' AND ')}
+       ORDER BY r.published_at DESC
+       LIMIT 600`
+    )
+      .bind(entityId, ...params)
+      .all<any>();
+    rows = res.results ?? [];
+  }
+
+  const grouped = new Map<
+    string,
+    {
+      direction: 'out' | 'in';
+      relationType: EntityRelationType;
+      otherEntity: {
+        id: string;
+        canonicalBn: string | null;
+        canonicalEn: string | null;
+        entityType: EntityType;
+        isHub: boolean;
+        shortTaglineBn: string | null;
+        shortTaglineEn: string | null;
+      };
+      predicateLabels: Set<string>;
+      sources: Set<string>;
+      weight: number;
+      latestAt: string | null;
+      articleIds: Set<string>;
+      evidence: EntityRelationEvidence[];
+    }
+  >();
+
+  for (const r of rows) {
+    const normRel = normalizeRelationType(r.relationType);
+    if (!normRel) continue;
+    const otherIsHub = Boolean(r.otherIsHub);
+    // Keep high-salience bilateral/structural relations to hubs, hide passive hub noise unless requested
+    if (!includeHubs && otherIsHub && !HIGH_SALIENCE_HUB_RELATIONS.has(normRel)) {
+      continue;
+    }
+
+    const direction: 'out' | 'in' = r.sourceId === entityId ? 'out' : 'in';
+    const key = `${direction}|${normRel}|${r.otherId}`;
+    let g = grouped.get(key);
+    if (!g) {
+      g = {
+        direction,
+        relationType: normRel,
+        otherEntity: {
+          id: r.otherId,
+          canonicalBn: r.otherBn ?? null,
+          canonicalEn: r.otherEn ?? null,
+          entityType: r.otherType as EntityType,
+          isHub: otherIsHub,
+          shortTaglineBn: r.otherTaglineBn ?? null,
+          shortTaglineEn: r.otherTaglineEn ?? null,
+        },
+        predicateLabels: new Set<string>(),
+        sources: new Set<string>(),
+        weight: 0,
+        latestAt: r.publishedAt ?? null,
+        articleIds: new Set<string>(),
+        evidence: [],
+      };
+      grouped.set(key, g);
+    }
+
+    if (r.predicateLabel) g.predicateLabels.add(String(r.predicateLabel));
+    g.sources.add(r.source ?? 'deterministic');
+    if (r.publishedAt && (!g.latestAt || r.publishedAt > g.latestAt)) {
+      g.latestAt = r.publishedAt;
+    }
+    if (!g.articleIds.has(r.articleId)) {
+      g.articleIds.add(r.articleId);
+      g.weight++;
+      if (g.evidence.length < 6) {
+        g.evidence.push({
+          articleId: r.articleId,
+          title: r.title,
+          outlet: r.outlet as OutletId,
+          publishedAt: r.publishedAt ?? null,
+          canonicalUrl: r.canonicalUrl,
+          snippet: r.snippet,
+          relationType: normRel,
+          predicateLabel: r.predicateLabel ?? null,
+          source: r.source ?? 'deterministic',
+        });
+      }
+    }
+  }
+
+  const relations = Array.from(grouped.values())
+    .sort((a, b) => b.weight - a.weight || (b.latestAt ?? '').localeCompare(a.latestAt ?? ''))
+    .slice(0, limit)
+    .map((g) => ({
+      direction: g.direction,
+      relationType: g.relationType,
+      predicateLabels: Array.from(g.predicateLabels).slice(0, 6),
+      sources: Array.from(g.sources),
+      weight: g.weight,
+      latestAt: g.latestAt,
+      otherEntity: g.otherEntity,
+      evidence: g.evidence,
+    }));
+
+  return json({
+    entityId,
+    ...(redirectedFrom ? { redirectedFrom } : {}),
+    relations,
+  });
+}
+
+async function handleEntityGraph(rawEntityId: string, env: ApiEnv): Promise<Response> {
+  const { id: entityId } = await resolveCanonicalEntityId(env.DB, rawEntityId);
   const exists = await env.DB.prepare('SELECT id FROM entity WHERE id = ?').bind(entityId).first<any>();
   if (!exists) {
     return json({ error: 'Entity not found' }, 404);
@@ -796,42 +1587,94 @@ async function handleSuggestEntities(url: URL, env: ApiEnv): Promise<Response> {
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 10) || 10, 1), 50);
   const pattern = `%${q}%`;
 
-  const rows = await env.DB.prepare(
-    `SELECT DISTINCT
-       e.id,
-       e.canonical_bn as canonicalBn,
-       e.canonical_en as canonicalEn,
-       e.entity_type as entityType
-     FROM entity e
-     LEFT JOIN entity_alias ea ON ea.entity_id = e.id
-     WHERE e.canonical_bn LIKE ?
-        OR e.canonical_en LIKE ?
-        OR ea.alias_raw LIKE ?
-        OR ea.alias_norm LIKE ?
-     ORDER BY e.canonical_bn ASC
-     LIMIT ?`
-  )
-    .bind(pattern, pattern, pattern, pattern.toLowerCase(), limit)
-    .all<any>();
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT
+         e.id,
+         e.canonical_bn as canonicalBn,
+         e.canonical_en as canonicalEn,
+         e.entity_type as entityType,
+         e.is_hub as isHub,
+         e.short_tagline_bn as shortTaglineBn,
+         e.short_tagline_en as shortTaglineEn,
+         e.article_count as articleCount
+       FROM entity e
+       WHERE e.status = 'active'
+         AND (
+           e.canonical_bn LIKE ?
+           OR e.canonical_en LIKE ?
+           OR EXISTS (
+             SELECT 1 FROM entity_alias ea
+             WHERE ea.entity_id = e.id
+               AND (ea.alias_raw LIKE ? OR ea.alias_norm LIKE ?)
+           )
+         )
+       ORDER BY e.article_count DESC, e.canonical_bn ASC
+       LIMIT ?`
+    )
+      .bind(pattern, pattern, pattern, pattern.toLowerCase(), limit)
+      .all<any>();
 
-  return json({ entities: rows.results ?? [] });
+    return json({
+      entities: (rows.results ?? []).map((r) => ({
+        ...r,
+        isHub: Boolean(r.isHub),
+      })),
+    });
+  } catch {
+    const rows = await env.DB.prepare(
+      `SELECT DISTINCT
+         e.id,
+         e.canonical_bn as canonicalBn,
+         e.canonical_en as canonicalEn,
+         e.entity_type as entityType
+       FROM entity e
+       LEFT JOIN entity_alias ea ON ea.entity_id = e.id
+       WHERE e.canonical_bn LIKE ?
+          OR e.canonical_en LIKE ?
+          OR ea.alias_raw LIKE ?
+          OR ea.alias_norm LIKE ?
+       ORDER BY e.canonical_bn ASC
+       LIMIT ?`
+    )
+      .bind(pattern, pattern, pattern, pattern.toLowerCase(), limit)
+      .all<any>();
+
+    return json({ entities: rows.results ?? [] });
+  }
 }
 
-async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise<Response> {
-  const centerRow = await env.DB.prepare(
-    `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
-     FROM entity WHERE id = ?`
-  )
-    .bind(entityId)
-    .first<any>();
+async function handleEntityEgo(rawEntityId: string, url: URL, env: ApiEnv): Promise<Response> {
+  const { id: entityId, redirectedFrom } = await resolveCanonicalEntityId(env.DB, rawEntityId);
+
+  let centerRow: any = null;
+  try {
+    centerRow = await env.DB.prepare(
+      `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType,
+              is_hub as isHub, short_tagline_bn as shortTaglineBn, short_tagline_en as shortTaglineEn,
+              description_bn as descriptionBn, description_en as descriptionEn
+       FROM entity WHERE id = ?`
+    )
+      .bind(entityId)
+      .first<any>();
+  } catch {
+    centerRow = await env.DB.prepare(
+      `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
+       FROM entity WHERE id = ?`
+    )
+      .bind(entityId)
+      .first<any>();
+  }
 
   if (!centerRow) {
     return json({ error: 'Entity not found' }, 404);
   }
+  centerRow = { ...centerRow, isHub: Boolean(centerRow.isHub) };
 
   const fromDate = url.searchParams.get('from') ?? undefined;
   const toDateRaw = url.searchParams.get('to') ?? undefined;
   const toDate = toDateRaw ? toDateUpperBound(toDateRaw) : undefined;
+  const includeHubs = url.searchParams.get('includeHubs') === 'true';
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 20) || 20, 1), 50);
 
   const dateFilters: string[] = [];
@@ -855,7 +1698,15 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
   const nAll = Number(nAllRow?.cnt ?? 0);
 
   if (nAll === 0) {
-    return json({ centerEntity: centerRow, nMe: 0, nAll: 0, neighbors: [], events: [] });
+    return json({
+      centerEntity: centerRow,
+      ...(redirectedFrom ? { redirectedFrom } : {}),
+      nMe: 0,
+      nAll: 0,
+      neighbors: [],
+      events: [],
+      incidence: [],
+    });
   }
 
   const nMeRow = await env.DB.prepare(
@@ -876,21 +1727,42 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
     coParams.push(toDate);
   }
 
-  const coRows = await env.DB.prepare(
-    `SELECT b.entity_id as otherId, COUNT(DISTINCT a.event_id) as together
-     FROM event_entity a
-     JOIN event_entity b ON b.event_id = a.event_id
-     WHERE ${coFilters.join(' AND ')}
-     GROUP BY b.entity_id
-     ORDER BY together DESC
-     LIMIT ?`
-  )
-    .bind(...coParams, limit)
-    .all<{ otherId: string; together: number }>();
+  // Over-fetch non-hub co-occurring candidates (4x limit) BEFORE ranking by damped PMI.
+  // CROSS JOIN locks SQLite join order (a -> b -> eb) so it never builds a Cartesian product
+  // between `entity eb` and `event_entity a` when `a` has thousands of events.
+  const candidatePoolLimit = Math.min(200, limit * 4);
+  let coList: Array<{ otherId: string; together: number }> = [];
+  try {
+    const hubClause = includeHubs ? '' : 'AND eb.is_hub = 0';
+    const coRows = await env.DB.prepare(
+      `SELECT b.entity_id as otherId, COUNT(*) as together
+       FROM event_entity a
+       CROSS JOIN event_entity b ON b.event_id = a.event_id
+       CROSS JOIN entity eb ON eb.id = b.entity_id AND eb.status = 'active' ${hubClause}
+       WHERE ${coFilters.join(' AND ')}
+       GROUP BY b.entity_id
+       ORDER BY together DESC
+       LIMIT ?`
+    )
+      .bind(...coParams, candidatePoolLimit)
+      .all<{ otherId: string; together: number }>();
+    coList = coRows.results ?? [];
+  } catch {
+    const coRows = await env.DB.prepare(
+      `SELECT b.entity_id as otherId, COUNT(*) as together
+       FROM event_entity a
+       CROSS JOIN event_entity b ON b.event_id = a.event_id
+       WHERE ${coFilters.join(' AND ')}
+       GROUP BY b.entity_id
+       ORDER BY together DESC
+       LIMIT ?`
+    )
+      .bind(...coParams, candidatePoolLimit)
+      .all<{ otherId: string; together: number }>();
+    coList = coRows.results ?? [];
+  }
 
-  const coList = coRows.results ?? [];
   const otherIds = coList.map((r) => r.otherId);
-
   const otherMetaMap = new Map<string, any>();
   const otherTotalMap = new Map<string, number>();
 
@@ -898,14 +1770,27 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
     if (chunk.length === 0) continue;
     const placeholders = chunk.map(() => '?').join(', ');
 
-    const metaRows = await env.DB.prepare(
-      `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
-       FROM entity WHERE id IN (${placeholders})`
-    )
-      .bind(...chunk)
-      .all<any>();
-    for (const m of metaRows.results ?? []) {
-      otherMetaMap.set(m.id, m);
+    try {
+      const metaRows = await env.DB.prepare(
+        `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType,
+                is_hub as isHub, short_tagline_bn as shortTaglineBn, short_tagline_en as shortTaglineEn
+         FROM entity WHERE id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<any>();
+      for (const m of metaRows.results ?? []) {
+        otherMetaMap.set(m.id, { ...m, isHub: Boolean(m.isHub) });
+      }
+    } catch {
+      const metaRows = await env.DB.prepare(
+        `SELECT id, canonical_bn as canonicalBn, canonical_en as canonicalEn, entity_type as entityType
+         FROM entity WHERE id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<any>();
+      for (const m of metaRows.results ?? []) {
+        otherMetaMap.set(m.id, { ...m, isHub: false });
+      }
     }
 
     const totRows = await env.DB.prepare(
@@ -935,7 +1820,8 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
-    .sort((a, b) => b.score - a.score || b.together - a.together);
+    .sort((a, b) => b.score - a.score || b.together - a.together)
+    .slice(0, limit);
 
   const evFilters: string[] = ['ee.entity_id = ?'];
   const evParams: unknown[] = [entityId];
@@ -995,11 +1881,20 @@ async function handleEntityEgo(entityId: string, url: URL, env: ApiEnv): Promise
     }
   }
 
-  return json({ centerEntity: centerRow, nMe, nAll, neighbors, events, incidence });
+  return json({
+    centerEntity: centerRow,
+    ...(redirectedFrom ? { redirectedFrom } : {}),
+    nMe,
+    nAll,
+    neighbors,
+    events,
+    incidence,
+  });
 }
 
-async function handleEntityActivity(entityId: string, url: URL, env: ApiEnv): Promise<Response> {
-  const exists = await env.DB.prepare(`SELECT id FROM entity WHERE id = ?`)
+async function handleEntityActivity(rawEntityId: string, url: URL, env: ApiEnv): Promise<Response> {
+  const { id: entityId } = await resolveCanonicalEntityId(env.DB, rawEntityId);
+  const exists = await env.DB.prepare('SELECT id FROM entity WHERE id = ?')
     .bind(entityId)
     .first<{ id: string }>();
   if (!exists) {
@@ -1066,7 +1961,6 @@ async function handleListEvents(url: URL, env: ApiEnv): Promise<Response> {
     const placeholders = entityIds.map(() => '?').join(', ');
     filters.push(`ee.entity_id IN (${placeholders})`);
     const allParams = [...params, ...entityIds, entityIds.length, limit];
-    // Reorder: entityIds are in WHERE, then HAVING COUNT = ?
     const whereClause = `WHERE ${filters.join(' AND ')}`;
     sql = `
       SELECT ec.id, ec.label, ec.lead_snippet as leadSnippet,
@@ -1120,9 +2014,11 @@ async function handleListEvents(url: URL, env: ApiEnv): Promise<Response> {
   return json({ events });
 }
 
-async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Response> {
+async function handleEventGraph(rawEventId: string, url: URL, env: ApiEnv): Promise<Response> {
+  const includeHubs = url.searchParams.get('includeHubs') === 'true';
+
   const redirect = await env.DB.prepare(
-    `SELECT new_id as newId FROM event_redirect WHERE old_id = ?`
+    'SELECT new_id as newId FROM event_redirect WHERE old_id = ?'
   )
     .bind(rawEventId)
     .first<{ newId: string }>();
@@ -1154,17 +2050,36 @@ async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Respon
     ...(redirect ? { redirectedFrom: rawEventId } : {}),
   };
 
-  const nodeRows = await env.DB.prepare(
-    `SELECT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn,
-            e.entity_type as entityType, ee.role, ee.article_count as articleCount,
-            ee.outlet_count as outletCount, ee.salience
-     FROM event_entity ee
-     JOIN entity e ON e.id = ee.entity_id
-     WHERE ee.event_id = ?
-     ORDER BY ee.salience DESC, ee.article_count DESC`
-  )
-    .bind(eventId)
-    .all<any>();
+  let rawNodes: any[] = [];
+  try {
+    const nodeRows = await env.DB.prepare(
+      `SELECT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn,
+              e.entity_type as entityType, e.is_hub as isHub,
+              e.short_tagline_bn as shortTaglineBn, e.short_tagline_en as shortTaglineEn,
+              ee.role, ee.article_count as articleCount,
+              ee.outlet_count as outletCount, ee.salience
+       FROM event_entity ee
+       JOIN entity e ON e.id = ee.entity_id
+       WHERE ee.event_id = ? AND e.status = 'active'
+       ORDER BY ee.salience DESC, ee.article_count DESC`
+    )
+      .bind(eventId)
+      .all<any>();
+    rawNodes = (nodeRows.results ?? []).map((n) => ({ ...n, isHub: Boolean(n.isHub) }));
+  } catch {
+    const nodeRows = await env.DB.prepare(
+      `SELECT e.id, e.canonical_bn as canonicalBn, e.canonical_en as canonicalEn,
+              e.entity_type as entityType, ee.role, ee.article_count as articleCount,
+              ee.outlet_count as outletCount, ee.salience
+       FROM event_entity ee
+       JOIN entity e ON e.id = ee.entity_id
+       WHERE ee.event_id = ?
+       ORDER BY ee.salience DESC, ee.article_count DESC`
+    )
+      .bind(eventId)
+      .all<any>();
+    rawNodes = (nodeRows.results ?? []).map((n) => ({ ...n, isHub: false }));
+  }
 
   const articleRows = await env.DB.prepare(
     `SELECT a.id, a.title, a.published_at as publishedAt, a.canonical_url as canonicalUrl, a.outlet
@@ -1205,6 +2120,7 @@ async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Respon
       source: string;
       target: string;
       relationType: string;
+      predicateLabels: Set<string>;
       weight: number;
       evidence: Array<{
         articleId: string;
@@ -1213,45 +2129,78 @@ async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Respon
         canonicalUrl: string;
         outlet: string;
         evidenceSnippet: string;
+        predicateLabel: string | null;
         confidence: number;
       }>;
     }
   >();
 
+  const edgeParticipantIds = new Set<string>();
+
   for (const chunk of chunkArray(articleIds)) {
     if (chunk.length === 0) continue;
     const placeholders = chunk.map(() => '?').join(', ');
-    const relRows = await env.DB.prepare(
-      `SELECT r.source_entity_id as source,
-              r.target_entity_id as target,
-              r.relation_type as relationType,
-              r.evidence_snippet as evidenceSnippet,
-              r.confidence,
-              a.id as articleId,
-              a.title,
-              a.published_at as publishedAt,
-              a.canonical_url as canonicalUrl,
-              a.outlet
-       FROM entity_relation r
-       JOIN article a ON a.id = r.article_id
-       WHERE r.article_id IN (${placeholders})`
-    )
-      .bind(...chunk)
-      .all<any>();
+    let relRows: any[] = [];
+    try {
+      const res = await env.DB.prepare(
+        `SELECT r.source_entity_id as source,
+                r.target_entity_id as target,
+                r.relation_type as relationType,
+                r.predicate_label as predicateLabel,
+                r.evidence_snippet as evidenceSnippet,
+                r.confidence,
+                a.id as articleId,
+                a.title,
+                a.published_at as publishedAt,
+                a.canonical_url as canonicalUrl,
+                a.outlet
+         FROM entity_relation r
+         JOIN article a ON a.id = r.article_id
+         WHERE r.article_id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<any>();
+      relRows = res.results ?? [];
+    } catch {
+      const res = await env.DB.prepare(
+        `SELECT r.source_entity_id as source,
+                r.target_entity_id as target,
+                r.relation_type as relationType,
+                r.evidence_snippet as evidenceSnippet,
+                r.confidence,
+                a.id as articleId,
+                a.title,
+                a.published_at as publishedAt,
+                a.canonical_url as canonicalUrl,
+                a.outlet
+         FROM entity_relation r
+         JOIN article a ON a.id = r.article_id
+         WHERE r.article_id IN (${placeholders})`
+      )
+        .bind(...chunk)
+        .all<any>();
+      relRows = res.results ?? [];
+    }
 
-    for (const r of relRows.results ?? []) {
-      const key = `${r.source}::${r.target}::${r.relationType}`;
+    for (const r of relRows) {
+      const normRel = normalizeRelationType(r.relationType);
+      if (!normRel) continue;
+      edgeParticipantIds.add(r.source);
+      edgeParticipantIds.add(r.target);
+      const key = `${r.source}::${r.target}::${normRel}`;
       let edge = edgeMap.get(key);
       if (!edge) {
         edge = {
           source: r.source,
           target: r.target,
-          relationType: r.relationType,
+          relationType: normRel,
+          predicateLabels: new Set<string>(),
           weight: 0,
           evidence: [],
         };
         edgeMap.set(key, edge);
       }
+      if (r.predicateLabel) edge.predicateLabels.add(String(r.predicateLabel));
       edge.weight += 1;
       edge.evidence.push({
         articleId: r.articleId,
@@ -1260,15 +2209,28 @@ async function handleEventGraph(rawEventId: string, env: ApiEnv): Promise<Respon
         canonicalUrl: r.canonicalUrl,
         outlet: r.outlet,
         evidenceSnippet: r.evidenceSnippet,
+        predicateLabel: r.predicateLabel ?? null,
         confidence: r.confidence,
       });
     }
   }
 
+  // Keep non-hub nodes + any hub that actually participates in an explicit relationship edge
+  const nodes = includeHubs
+    ? rawNodes
+    : rawNodes.filter((n) => !n.isHub || edgeParticipantIds.has(n.id));
+
   return json({
     event,
-    nodes: nodeRows.results ?? [],
-    edges: Array.from(edgeMap.values()),
+    nodes,
+    edges: Array.from(edgeMap.values()).map((e) => ({
+      source: e.source,
+      target: e.target,
+      relationType: e.relationType,
+      predicateLabels: Array.from(e.predicateLabels).slice(0, 5),
+      weight: e.weight,
+      evidence: e.evidence,
+    })),
     articles,
   });
 }
@@ -1292,6 +2254,14 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
          (SELECT COUNT(*) FROM entity_relation) as entityRelations`
     ).first<any>();
     return json({ ok: true, counts });
+  }
+
+  if (path === '/registry/snapshot' && request.method === 'GET') {
+    return handleRegistrySnapshot(request, env);
+  }
+
+  if (path === '/resolve' && request.method === 'POST') {
+    return handleAdHocResolve(request, env);
   }
 
   if (path === '/search' && (request.method === 'GET' || request.method === 'POST')) {
@@ -1320,6 +2290,16 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
     return handleListEntities(url, env);
   }
 
+  const entityArticlesMatch = path.match(/^\/entities\/([^/]+)\/articles$/);
+  if (entityArticlesMatch && request.method === 'GET') {
+    return handleEntityArticles(decodeURIComponent(entityArticlesMatch[1]!), url, env);
+  }
+
+  const entityRelationsMatch = path.match(/^\/entities\/([^/]+)\/relations$/);
+  if (entityRelationsMatch && request.method === 'GET') {
+    return handleEntityRelations(decodeURIComponent(entityRelationsMatch[1]!), url, env);
+  }
+
   const entityEgoMatch = path.match(/^\/entities\/([^/]+)\/ego$/);
   if (entityEgoMatch && request.method === 'GET') {
     return handleEntityEgo(decodeURIComponent(entityEgoMatch[1]!), url, env);
@@ -1335,13 +2315,18 @@ export async function handleApiRequest(request: Request, env: ApiEnv): Promise<R
     return handleEntityGraph(decodeURIComponent(entityGraphMatch[1]!), env);
   }
 
+  const entityProfileMatch = path.match(/^\/entities\/([^/]+)$/);
+  if (entityProfileMatch && request.method === 'GET') {
+    return handleEntityProfile(decodeURIComponent(entityProfileMatch[1]!), env);
+  }
+
   if (path === '/events' && request.method === 'GET') {
     return handleListEvents(url, env);
   }
 
   const eventGraphMatch = path.match(/^\/events\/([^/]+)\/graph$/);
   if (eventGraphMatch && request.method === 'GET') {
-    return handleEventGraph(decodeURIComponent(eventGraphMatch[1]!), env);
+    return handleEventGraph(decodeURIComponent(eventGraphMatch[1]!), url, env);
   }
 
   const articleGraphMatch = path.match(/^\/articles\/([^/]+)\/graph$/);

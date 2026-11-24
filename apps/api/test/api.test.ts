@@ -25,9 +25,14 @@ function createTestEnv(): { db: Database; env: ApiEnv } {
     join(import.meta.dir, '../migrations/0003_event_entity.sql'),
     'utf8'
   );
+  const migration4 = readFileSync(
+    join(import.meta.dir, '../migrations/0004_entity_v2.sql'),
+    'utf8'
+  );
   db.run(migration1);
   db.run(migration2);
   db.run(migration3);
+  db.run(migration4);
 
   db.run(
     `INSERT INTO article (id, outlet, canonical_url, title, published_at, lead, clean_text)
@@ -110,7 +115,7 @@ function createTestEnv(): { db: Database; env: ApiEnv } {
        ('clu_art-pa-1', 'ent_lng', 'subject', 1, 1, 1, 0.7, '2026-11-12T10:00:00Z', '2026-11-12T12:00:00Z')`
   );
   db.run(`INSERT INTO event_redirect (old_id, new_id) VALUES ('clu_old_1', 'clu_art-pa-1')`);
-  db.run(`INSERT INTO entity_relation (id, article_id, source_entity_id, target_entity_id, relation_type, evidence_snippet, published_at, confidence) VALUES ('rel-1', 'art-pa-1', 'ent_lng', 'ent_coxs_bazar', 'located_in', 'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্প অনুমোদন', '2026-11-12T10:00:00Z', 0.92)`);
+  db.run(`INSERT INTO entity_relation (id, article_id, source_entity_id, target_entity_id, relation_type, evidence_snippet, published_at, confidence) VALUES ('rel-1', 'art-pa-1', 'ent_lng', 'ent_coxs_bazar', 'incident_at', 'কক্সবাজারে এলএনজি টার্মিনাল প্রকল্প অনুমোদন', '2026-11-12T10:00:00Z', 0.92)`);
 
   return { db, env: { DB: createSqliteD1Adapter(db) } };
 }
@@ -182,7 +187,7 @@ describe('API Worker Routes', () => {
       const entGraph = (await entGraphRes.json()) as any;
       expect(entGraph.centerEntity.id).toBe('ent_coxs_bazar');
       expect(entGraph.edges.length).toBe(1);
-      expect(entGraph.edges[0].relationType).toBe('located_in');
+      expect(entGraph.edges[0].relationType).toBe('incident_at');
       expect(entGraph.hyperedges.length).toBeGreaterThanOrEqual(1);
 
       const cluEntRes = await handleApiRequest(
@@ -281,6 +286,121 @@ describe('API Worker Routes', () => {
       expect(evGraph.edges[0].evidence[0].canonicalUrl).toBe(
         'https://www.prothomalo.com/bangladesh/1'
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it('serves v2 /registry/snapshot (ETag), POST /resolve, /entities/:id dossier, /articles, /relations, and hub filtering', async () => {
+    const { db, env } = createTestEnv();
+    try {
+      db.run(
+        `INSERT INTO registry_version (version, updated_at, note) VALUES (3, '2026-11-24T00:00:00Z', 'test-v3')`
+      );
+      db.run(
+        `UPDATE entity
+         SET description_bn = 'কক্সবাজার বাংলাদেশের দক্ষিণ-পূর্বাঞ্চলের উপকূলীয় জেলা।',
+             description_en = 'Coxs Bazar is a coastal district in southeastern Bangladesh.',
+             short_tagline_bn = 'উপকূলীয় জেলা',
+             short_tagline_en = 'Coastal district of Bangladesh',
+             description_sources_json = '["art-pa-1"]',
+             article_count = 2,
+             event_count = 1
+         WHERE id = 'ent_coxs_bazar'`
+      );
+      // Add a merged alias entity pointing to ent_coxs_bazar + a hub entity (Bangladesh)
+      db.run(
+        `INSERT INTO entity (id, canonical_bn, canonical_en, entity_type, status, merged_into)
+         VALUES ('ent_coxs_old', 'কক্সবাজার পুরাতন', 'Old Coxs', 'location', 'merged', 'ent_coxs_bazar')`
+      );
+      db.run(
+        `INSERT INTO entity (id, canonical_bn, canonical_en, entity_type, status, is_hub, article_count, event_count)
+         VALUES ('ent_bangladesh', 'বাংলাদেশ', 'Bangladesh', 'location', 'active', 1, 2, 1)`
+      );
+      db.run(
+        `INSERT INTO event_entity (event_id, entity_id, role, article_count, outlet_count, headline_count, salience, event_start, event_end)
+         VALUES ('clu_art-pa-1', 'ent_bangladesh', 'location', 2, 2, 0, 0.4, '2026-11-12T10:00:00Z', '2026-11-12T12:00:00Z')`
+      );
+      db.run(
+        `INSERT INTO entity_relation (id, article_id, source_entity_id, target_entity_id, relation_type, predicate_label, source, evidence_snippet, published_at, confidence)
+         VALUES
+           ('rel-hub-passive', 'art-pa-1', 'ent_coxs_bazar', 'ent_bangladesh', 'incident_at', 'located in', 'deterministic', 'কক্সবাজারে প্রকল্প', '2026-11-12T10:00:00Z', 0.8),
+           ('rel-hub-macro', 'art-ds-1', 'ent_lng', 'ent_bangladesh', 'funded_or_invested', 'approved financing for', 'llm_claim', 'Government approves new LNG terminal.', '2026-11-12T12:00:00Z', 0.92)`
+      );
+
+      // 1) GET /registry/snapshot with ETag + 304 Not Modified
+      const snapRes = await handleApiRequest(new Request('http://localhost/registry/snapshot'), env);
+      expect(snapRes.status).toBe(200);
+      expect(snapRes.headers.get('ETag')).toBe('"v3"');
+      const snap = (await snapRes.json()) as any;
+      expect(snap.version).toBe(3);
+      expect(snap.entities.length).toBeGreaterThanOrEqual(3);
+
+      const snap304 = await handleApiRequest(
+        new Request('http://localhost/registry/snapshot', { headers: { 'If-None-Match': '"v3"' } }),
+        env
+      );
+      expect(snap304.status).toBe(304);
+
+      // 2) POST /resolve ad-hoc text resolution
+      const resolveRes = await handleApiRequest(
+        new Request('http://localhost/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: 'কক্সবাজারে নতুন প্রকল্প অনুমোদন হয়েছে।', publishedAt: '2026-11-12' }),
+        }),
+        env
+      );
+      expect(resolveRes.status).toBe(200);
+      const resolved = (await resolveRes.json()) as any;
+      expect(resolved.registryVersion).toBe(3);
+      expect(resolved.mentions.some((m: any) => m.entityId === 'ent_coxs_bazar')).toBe(true);
+
+      // 3) GET /entities/:id dossier + merged_into redirect
+      const profRes = await handleApiRequest(new Request('http://localhost/entities/ent_coxs_old'), env);
+      expect(profRes.status).toBe(200);
+      const prof = (await profRes.json()) as any;
+      expect(prof.id).toBe('ent_coxs_bazar');
+      expect(prof.redirectedFrom).toBe('ent_coxs_old');
+      expect(prof.descriptionEn).toContain('coastal district');
+      expect(prof.descriptionSources.length).toBe(1);
+      expect(prof.descriptionSources[0].articleId).toBe('art-pa-1');
+
+      // 4) GET /entities/:id/articles with co-entity `with=` intersection
+      const artRes = await handleApiRequest(
+        new Request('http://localhost/entities/ent_coxs_bazar/articles?with=ent_lng'),
+        env
+      );
+      expect(artRes.status).toBe(200);
+      const artData = (await artRes.json()) as any;
+      expect(artData.total).toBe(1);
+      expect(artData.articles[0].id).toBe('art-pa-1');
+
+      // 5) GET /entities/:id/relations hides passive hub incident_at by default, preserves macro funded_or_invested to hub
+      const relCoxs = await handleApiRequest(new Request('http://localhost/entities/ent_coxs_bazar/relations'), env);
+      expect(relCoxs.status).toBe(200);
+      const relCoxsData = (await relCoxs.json()) as any;
+      expect(relCoxsData.relations.some((r: any) => r.otherEntity.id === 'ent_bangladesh')).toBe(false);
+      expect(relCoxsData.relations.some((r: any) => r.otherEntity.id === 'ent_lng')).toBe(true);
+
+      const relLng = await handleApiRequest(new Request('http://localhost/entities/ent_lng/relations'), env);
+      const relLngData = (await relLng.json()) as any;
+      const macroEdge = relLngData.relations.find((r: any) => r.relationType === 'funded_or_invested');
+      expect(macroEdge).toBeDefined();
+      expect(macroEdge.otherEntity.id).toBe('ent_bangladesh');
+      expect(macroEdge.predicateLabels).toContain('approved financing for');
+
+      // 6) GET /entities/:id/ego hides hubs by default, shows them with includeHubs=true
+      const egoNoHub = await handleApiRequest(new Request('http://localhost/entities/ent_coxs_bazar/ego'), env);
+      const egoNoHubData = (await egoNoHub.json()) as any;
+      expect(egoNoHubData.neighbors.some((n: any) => n.id === 'ent_bangladesh')).toBe(false);
+
+      const egoWithHub = await handleApiRequest(
+        new Request('http://localhost/entities/ent_coxs_bazar/ego?includeHubs=true'),
+        env
+      );
+      const egoWithHubData = (await egoWithHub.json()) as any;
+      expect(egoWithHubData.neighbors.some((n: any) => n.id === 'ent_bangladesh')).toBe(true);
     } finally {
       db.close();
     }

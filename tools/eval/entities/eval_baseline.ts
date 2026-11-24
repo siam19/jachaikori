@@ -39,7 +39,7 @@ function main(): void {
 
   const seed = buildSeedRegistry();
   const entityById = new Map(seed.entities.map((e) => [e.id, e]));
-  const resolver = new EntityHypergraphResolver(seed.entities, seed.aliases);
+  const resolver = new EntityHypergraphResolver(seed.entities, seed.aliases, seed.roleTerms);
 
   let linkedArticles = 0;
   let totalMentions = 0;

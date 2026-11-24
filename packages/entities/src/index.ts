@@ -8,3 +8,5 @@ export * from './seed';
 export * from './discover';
 export * from './resolver';
 export * from './association';
+export * from './policy';
+export * from './redirects';

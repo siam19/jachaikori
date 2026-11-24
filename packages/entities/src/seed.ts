@@ -4,7 +4,7 @@
  * for Bangladesh public figures, political parties, institutions, locations, and major topics.
  */
 
-import type { Entity, EntityAlias } from '@jachaikori/schema';
+import type { Entity, EntityAlias, RoleTerm } from '@jachaikori/schema';
 import { normalizeText, normalizeToken } from './normalize';
 
 export interface SeedAliasSpec {
@@ -12,6 +12,7 @@ export interface SeedAliasSpec {
   validFrom?: string | null;
   validTo?: string | null;
   requireUppercase?: boolean;
+  kind?: EntityAlias['kind'];
 }
 
 export interface SeedEntityDefinition {
@@ -23,9 +24,49 @@ export interface ExpandedEntityAlias extends EntityAlias {
   requireUppercase?: boolean;
 }
 
+/**
+ * High-frequency background corpus hubs. Kept in the registry for bilateral/macro
+ * facts and query expansion, but hidden from default co-occurrence/neighbor views.
+ */
+export const SEED_HUB_IDS = new Set<string>([
+  'ent_bangladesh',
+  'ent_dhaka',
+  'ent_police',
+]);
+
+/**
+ * Explicit temporal office-holder bindings separated from bare role entities.
+ */
+export const SEED_ROLE_TERMS: RoleTerm[] = [
+  {
+    id: 'rt_pm_sheikh_hasina_2009',
+    roleEntityId: 'ent_role_prime_minister',
+    holderEntityId: 'ent_sheikh_hasina',
+    validFrom: '2009-01-06',
+    validTo: '2024-08-05',
+    sourceUrl: null,
+  },
+  {
+    id: 'rt_ca_muhammad_yunus_2024',
+    roleEntityId: 'ent_role_chief_adviser',
+    holderEntityId: 'ent_muhammad_yunus',
+    validFrom: '2024-08-08',
+    validTo: '2026-02-16',
+    sourceUrl: null,
+  },
+  {
+    id: 'rt_pm_tareque_rahman_2026',
+    roleEntityId: 'ent_role_prime_minister',
+    holderEntityId: 'ent_tareque_rahman',
+    validFrom: '2026-02-17',
+    validTo: null,
+    sourceUrl: null,
+  },
+];
+
 const RAW_SEED: SeedEntityDefinition[] = [
   // ==========================================
-  // Public Figures & Political Leaders (+ Temporal Role Bindings)
+  // Public Figures & Political Leaders
   // ==========================================
   {
     entity: {
@@ -42,9 +83,7 @@ const RAW_SEED: SeedEntityDefinition[] = [
       { raw: 'Tareque Rahman' },
       { raw: 'Tarique Zia' },
       { raw: 'প্রধানমন্ত্রী তারেক রহমান', validFrom: '2026-02-17' },
-      { raw: 'প্রধানমন্ত্রী', validFrom: '2026-02-17', validTo: null },
-      { raw: 'Prime Minister', validFrom: '2026-02-17', validTo: null },
-      { raw: 'PM', validFrom: '2026-02-17', validTo: null, requireUppercase: true },
+      { raw: 'Prime Minister Tarique Rahman', validFrom: '2026-02-17' },
     ],
   },
   {
@@ -59,12 +98,12 @@ const RAW_SEED: SeedEntityDefinition[] = [
       { raw: 'মুহাম্মদ ইউনূস' },
       { raw: 'ড. মুহাম্মদ ইউনূস' },
       { raw: 'ড. ইউনূস' },
+      { raw: 'প্রধান উপদেষ্টা মুহাম্মদ ইউনূস', validFrom: '2024-08-08', validTo: '2026-02-16' },
+      { raw: 'প্রধান উপদেষ্টা ড. মুহাম্মদ ইউনূস', validFrom: '2024-08-08', validTo: '2026-02-16' },
       { raw: 'Muhammad Yunus' },
       { raw: 'Dr Yunus' },
       { raw: 'Dr. Yunus' },
       { raw: 'Prof Yunus' },
-      { raw: 'প্রধান উপদেষ্টা', validFrom: '2024-08-08', validTo: '2026-02-16' },
-      { raw: 'Chief Adviser', validFrom: '2024-08-08', validTo: '2026-02-16' },
     ],
   },
   {
@@ -78,11 +117,9 @@ const RAW_SEED: SeedEntityDefinition[] = [
     aliases: [
       { raw: 'শেখ হাসিনা' },
       { raw: 'হাসিনা' },
+      { raw: 'প্রধানমন্ত্রী শেখ হাসিনা', validFrom: '2009-01-06', validTo: '2024-08-05' },
       { raw: 'Sheikh Hasina' },
       { raw: 'Hasina' },
-      { raw: 'প্রধানমন্ত্রী', validFrom: '2009-01-06', validTo: '2024-08-05' },
-      { raw: 'Prime Minister', validFrom: '2009-01-06', validTo: '2024-08-05' },
-      { raw: 'PM', validFrom: '2009-01-06', validTo: '2024-08-05', requireUppercase: true },
     ],
   },
   {
@@ -337,8 +374,45 @@ const RAW_SEED: SeedEntityDefinition[] = [
   },
 
   // ==========================================
-  // Constitutional & Cabinet Roles (Portfolio-Level)
+  // Constitutional & Cabinet Roles (Portfolio-Level + Temporal Role Terms)
   // ==========================================
+  {
+    entity: {
+      id: 'ent_role_prime_minister',
+      canonicalBn: 'প্রধানমন্ত্রী',
+      canonicalEn: 'Prime Minister',
+      entityType: 'role',
+    },
+    aliases: [
+      { raw: 'প্রধানমন্ত্রী', kind: 'role' },
+      { raw: 'Prime Minister', kind: 'role' },
+      { raw: 'PM', requireUppercase: true, kind: 'role' },
+    ],
+  },
+  {
+    entity: {
+      id: 'ent_role_chief_adviser',
+      canonicalBn: 'প্রধান উপদেষ্টা',
+      canonicalEn: 'Chief Adviser',
+      entityType: 'role',
+    },
+    aliases: [
+      { raw: 'প্রধান উপদেষ্টা', kind: 'role' },
+      { raw: 'Chief Adviser', kind: 'role' },
+    ],
+  },
+  {
+    entity: {
+      id: 'ent_role_attorney_general',
+      canonicalBn: 'অ্যাটর্নি জেনারেল',
+      canonicalEn: 'Attorney General',
+      entityType: 'role',
+    },
+    aliases: [
+      { raw: 'অ্যাটর্নি জেনারেল', kind: 'role' },
+      { raw: 'Attorney General', kind: 'role' },
+    ],
+  },
   {
     entity: {
       id: 'ent_role_president',
@@ -346,7 +420,7 @@ const RAW_SEED: SeedEntityDefinition[] = [
       canonicalEn: 'President',
       entityType: 'role',
     },
-    aliases: [{ raw: 'রাষ্ট্রপতি' }, { raw: 'President', requireUppercase: true }],
+    aliases: [{ raw: 'রাষ্ট্রপতি', kind: 'role' }, { raw: 'President', requireUppercase: true, kind: 'role' }],
   },
   {
     entity: {
@@ -695,6 +769,79 @@ const RAW_SEED: SeedEntityDefinition[] = [
   },
   {
     entity: {
+      id: 'ent_bkmea',
+      canonicalBn: 'বিকেএমইএ',
+      canonicalEn: 'BKMEA',
+      entityType: 'org',
+    },
+    aliases: [{ raw: 'বিকেএমইএ' }, { raw: 'BKMEA', requireUppercase: true }],
+  },
+  {
+    entity: {
+      id: 'ent_minimum_wage_board',
+      canonicalBn: 'ন্যূনতম মজুরি বোর্ড',
+      canonicalEn: 'Minimum Wage Board',
+      entityType: 'org',
+    },
+    aliases: [
+      { raw: 'ন্যূনতম মজুরি বোর্ড' },
+      { raw: 'নিম্নতম মজুরি বোর্ড' },
+      { raw: 'মজুরি বোর্ড' },
+      { raw: 'Minimum Wage Board' },
+    ],
+  },
+  {
+    entity: {
+      id: 'ent_adb',
+      canonicalBn: 'এশীয় উন্নয়ন ব্যাংক (এডিবি)',
+      canonicalEn: 'Asian Development Bank (ADB)',
+      entityType: 'org',
+    },
+    aliases: [
+      { raw: 'এশীয় উন্নয়ন ব্যাংক' },
+      { raw: 'এডিবি' },
+      { raw: 'Asian Development Bank' },
+      { raw: 'ADB', requireUppercase: true },
+    ],
+  },
+  {
+    entity: {
+      id: 'ent_narendra_modi',
+      canonicalBn: 'নরেন্দ্র মোদি',
+      canonicalEn: 'Narendra Modi',
+      entityType: 'person',
+      metadataJson: JSON.stringify({ country: 'India', role: 'Prime Minister of India' }),
+    },
+    aliases: [
+      { raw: 'নরেন্দ্র মোদি' },
+      { raw: 'নরেন্দ্র মোদী' },
+      { raw: 'প্রধানমন্ত্রী নরেন্দ্র মোদি' },
+      { raw: 'Narendra Modi' },
+      { raw: 'Prime Minister Narendra Modi' },
+    ],
+  },
+  {
+    entity: {
+      id: 'ent_imran_khan',
+      canonicalBn: 'ইমরান খান',
+      canonicalEn: 'Imran Khan',
+      entityType: 'person',
+      metadataJson: JSON.stringify({ country: 'Pakistan' }),
+    },
+    aliases: [{ raw: 'ইমরান খান' }, { raw: 'Imran Khan' }],
+  },
+  {
+    entity: {
+      id: 'ent_donald_trump',
+      canonicalBn: 'ডোনাল্ড ট্রাম্প',
+      canonicalEn: 'Donald Trump',
+      entityType: 'person',
+      metadataJson: JSON.stringify({ country: 'USA' }),
+    },
+    aliases: [{ raw: 'ডোনাল্ড ট্রাম্প' }, { raw: 'Donald Trump' }],
+  },
+  {
+    entity: {
       id: 'ent_biman',
       canonicalBn: 'বিমান বাংলাদেশ এয়ারলাইন্স',
       canonicalEn: 'Biman Bangladesh Airlines',
@@ -916,12 +1063,18 @@ const RAW_SEED: SeedEntityDefinition[] = [
 export function buildSeedRegistry(): {
   entities: Entity[];
   aliases: ExpandedEntityAlias[];
+  roleTerms: RoleTerm[];
 } {
   const entities: Entity[] = [];
   const aliases: ExpandedEntityAlias[] = [];
 
   for (const item of RAW_SEED) {
-    entities.push(item.entity);
+    entities.push({
+      ...item.entity,
+      status: 'active',
+      source: 'seed',
+      isHub: SEED_HUB_IDS.has(item.entity.id),
+    });
     for (const a of item.aliases) {
       const rawClean = normalizeText(a.raw);
       const norm = rawClean
@@ -937,9 +1090,11 @@ export function buildSeedRegistry(): {
         validFrom: a.validFrom ?? null,
         validTo: a.validTo ?? null,
         requireUppercase: a.requireUppercase,
+        kind: a.kind ?? (a.requireUppercase ? 'acronym' : 'name'),
+        source: 'seed',
       });
     }
   }
 
-  return { entities, aliases };
+  return { entities, aliases, roleTerms: SEED_ROLE_TERMS.map((rt) => ({ ...rt })) };
 }

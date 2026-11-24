@@ -1,16 +1,18 @@
 /**
  * @file packages/entities/src/association.ts
- * Pointwise Mutual Information (PMI) association scoring between co-occurring entities.
+ * Damped Positive Pointwise Mutual Information (PPMI) association scoring
+ * between co-occurring entities over an event window.
  */
 
 /**
- * Computes non-negative Pointwise Mutual Information (PPMI) between two entities.
+ * Computes damped non-negative Pointwise Mutual Information (PPMI * ln(1 + together))
+ * between two entities so strong recurring co-occurrences outrank rare 1-event flukes.
  *
- * @param together Number of events/articles where both entities co-occur
- * @param totalOther Total events/articles containing the other entity
- * @param nMe Total events/articles containing the focal entity
- * @param nAll Total events/articles in the corpus
- * @returns Non-negative PMI score (`Math.max(0, pmi)`), or `0` on invalid/zero inputs
+ * @param together Number of events where both entities co-occur
+ * @param totalOther Total events containing the other entity
+ * @param nMe Total events containing the focal entity
+ * @param nAll Total events in the window
+ * @returns Non-negative damped PPMI score, or `0` on invalid/zero inputs
  */
 export function associationScore(
   together: number,
@@ -37,9 +39,9 @@ export function associationScore(
   }
 
   const pmi = Math.log2(ratio);
-  if (!Number.isFinite(pmi)) {
+  if (!Number.isFinite(pmi) || pmi <= 0) {
     return 0;
   }
 
-  return Math.max(0, pmi);
+  return pmi * Math.log(1 + together);
 }

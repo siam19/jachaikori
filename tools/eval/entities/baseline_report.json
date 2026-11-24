@@ -1,14 +1,14 @@
 {
   "totalArticles": 128,
   "linkedArticles": 127,
-  "totalMentions": 811,
-  "totalRelations": 529,
+  "totalMentions": 501,
+  "totalRelations": 160,
   "roleDistribution": {
-    "subject": 12,
-    "location": 328,
-    "mentioned": 341,
-    "quoted_speaker": 109,
-    "actor": 21
+    "subject": 6,
+    "location": 221,
+    "mentioned": 160,
+    "quoted_speaker": 100,
+    "actor": 14
   },
   "topEntities": [
     {
@@ -16,7 +16,7 @@
       "canonicalBn": "বাংলাদেশ",
       "canonicalEn": "Bangladesh",
       "entityType": "location",
-      "mentions": 109,
+      "mentions": 70,
       "articles": 70
     },
     {
@@ -24,7 +24,7 @@
       "canonicalBn": "ঢাকা",
       "canonicalEn": "Dhaka",
       "entityType": "location",
-      "mentions": 87,
+      "mentions": 61,
       "articles": 61
     },
     {
@@ -32,39 +32,31 @@
       "canonicalBn": "পুলিশ",
       "canonicalEn": "Bangladesh Police",
       "entityType": "org",
-      "mentions": 75,
+      "mentions": 37,
       "articles": 37
-    },
-    {
-      "entityId": "ent_tareque_rahman",
-      "canonicalBn": "তারেক রহমান",
-      "canonicalEn": "Tarique Rahman",
-      "entityType": "person",
-      "mentions": 59,
-      "articles": 34
     },
     {
       "entityId": "ent_sheikh_hasina",
       "canonicalBn": "শেখ হাসিনা",
       "canonicalEn": "Sheikh Hasina",
       "entityType": "person",
-      "mentions": 53,
+      "mentions": 24,
       "articles": 24
     },
     {
-      "entityId": "ent_india",
-      "canonicalBn": "ভারত",
-      "canonicalEn": "India",
-      "entityType": "location",
-      "mentions": 39,
-      "articles": 19
+      "entityId": "ent_tareque_rahman",
+      "canonicalBn": "তারেক রহমান",
+      "canonicalEn": "Tarique Rahman",
+      "entityType": "person",
+      "mentions": 24,
+      "articles": 24
     },
     {
       "entityId": "ent_awami_league",
       "canonicalBn": "আওয়ামী লীগ",
       "canonicalEn": "Awami League",
       "entityType": "org",
-      "mentions": 30,
+      "mentions": 22,
       "articles": 22
     },
     {
@@ -72,15 +64,23 @@
       "canonicalBn": "বিএনপি",
       "canonicalEn": "BNP",
       "entityType": "org",
-      "mentions": 30,
+      "mentions": 22,
       "articles": 22
+    },
+    {
+      "entityId": "ent_india",
+      "canonicalBn": "ভারত",
+      "canonicalEn": "India",
+      "entityType": "location",
+      "mentions": 19,
+      "articles": 19
     },
     {
       "entityId": "ent_parliament",
       "canonicalBn": "জাতীয় সংসদ",
       "canonicalEn": "Parliament (JS)",
       "entityType": "org",
-      "mentions": 30,
+      "mentions": 16,
       "articles": 16
     },
     {
@@ -88,190 +88,90 @@
       "canonicalBn": "জামায়াতে ইসলামী",
       "canonicalEn": "Jamaat-e-Islami",
       "entityType": "org",
-      "mentions": 24,
+      "mentions": 14,
       "articles": 14
-    },
-    {
-      "entityId": "ent_ict",
-      "canonicalBn": "আন্তর্জাতিক অপরাধ ট্রাইব্যুনাল",
-      "canonicalEn": "International Crimes Tribunal (ICT)",
-      "entityType": "org",
-      "mentions": 17,
-      "articles": 6
     },
     {
       "entityId": "ent_chattogram",
       "canonicalBn": "চট্টগ্রাম",
       "canonicalEn": "Chattogram",
       "entityType": "location",
-      "mentions": 14,
+      "mentions": 12,
       "articles": 12
     },
     {
-      "entityId": "ent_role_president",
-      "canonicalBn": "রাষ্ট্রপতি",
-      "canonicalEn": "President",
-      "entityType": "role",
-      "mentions": 13,
-      "articles": 10
-    },
-    {
-      "entityId": "ent_role_home_minister",
-      "canonicalBn": "স্বরাষ্ট্রমন্ত্রী",
-      "canonicalEn": "Home Minister",
-      "entityType": "role",
-      "mentions": 10,
-      "articles": 10
-    },
-    {
-      "entityId": "ent_usa",
-      "canonicalBn": "যুক্তরাষ্ট্র",
-      "canonicalEn": "United States",
+      "entityId": "ent_uk",
+      "canonicalBn": "যুক্তরাজ্য",
+      "canonicalEn": "United Kingdom",
       "entityType": "location",
-      "mentions": 10,
-      "articles": 5
-    },
-    {
-      "entityId": "ent_role_foreign_minister",
-      "canonicalBn": "পররাষ্ট্রমন্ত্রী",
-      "canonicalEn": "Foreign Minister",
-      "entityType": "role",
-      "mentions": 9,
-      "articles": 8
-    },
-    {
-      "entityId": "ent_acc",
-      "canonicalBn": "দুর্নীতি দমন কমিশন (দুদক)",
-      "canonicalEn": "Anti-Corruption Commission (ACC)",
-      "entityType": "org",
-      "mentions": 8,
-      "articles": 3
+      "mentions": 7,
+      "articles": 7
     },
     {
       "entityId": "ent_china",
       "canonicalBn": "চীন",
       "canonicalEn": "China",
       "entityType": "location",
-      "mentions": 8,
+      "mentions": 6,
       "articles": 6
     },
     {
-      "entityId": "ent_ncp",
-      "canonicalBn": "এনসিপি",
-      "canonicalEn": "NCP",
+      "entityId": "ent_ict",
+      "canonicalBn": "আন্তর্জাতিক অপরাধ ট্রাইব্যুনাল",
+      "canonicalEn": "International Crimes Tribunal (ICT)",
       "entityType": "org",
-      "mentions": 8,
-      "articles": 4
+      "mentions": 6,
+      "articles": 6
     },
     {
-      "entityId": "ent_shafiqur_rahman",
-      "canonicalBn": "শফিকুর রহমান",
-      "canonicalEn": "Dr. Shafiqur Rahman",
+      "entityId": "ent_sylhet",
+      "canonicalBn": "সিলেট",
+      "canonicalEn": "Sylhet",
+      "entityType": "location",
+      "mentions": 6,
+      "articles": 6
+    },
+    {
+      "entityId": "ent_mirza_fakhrul",
+      "canonicalBn": "মির্জা ফখরুল ইসলাম আলমগীর",
+      "canonicalEn": "Mirza Fakhrul Islam Alamgir",
       "entityType": "person",
-      "mentions": 8,
-      "articles": 4
+      "mentions": 5,
+      "articles": 5
+    },
+    {
+      "entityId": "ent_role_home_minister",
+      "canonicalBn": "স্বরাষ্ট্রমন্ত্রী",
+      "canonicalEn": "Home Minister",
+      "entityType": "role",
+      "mentions": 5,
+      "articles": 5
+    },
+    {
+      "entityId": "ent_supreme_court",
+      "canonicalBn": "সুপ্রিম কোর্ট",
+      "canonicalEn": "Supreme Court",
+      "entityType": "org",
+      "mentions": 5,
+      "articles": 5
+    },
+    {
+      "entityId": "ent_topic_july_uprising",
+      "canonicalBn": "জুলাই অভ্যুত্থান",
+      "canonicalEn": "July Uprising",
+      "entityType": "event_topic",
+      "mentions": 5,
+      "articles": 5
+    },
+    {
+      "entityId": "ent_usa",
+      "canonicalBn": "যুক্তরাষ্ট্র",
+      "canonicalEn": "United States",
+      "entityType": "location",
+      "mentions": 5,
+      "articles": 5
     }
   ],
-  "flaggedPmFpCount": 11,
-  "flaggedPmFps": [
-    {
-      "articleId": "e8dc59a9c93e2cd11c1a056ff462665d",
-      "outlet": "daily-star",
-      "stratum": "edge_pm",
-      "title": "Hasina names Selim to lead AL in her absence",
-      "surfaceForm": "Prime Minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "30d5daa505318c94871be540c03772e8",
-      "outlet": "bangladesh-protidin",
-      "stratum": "edge_pm",
-      "title": "খালেদা জিয়ার ৮২তম জন্মদিন আগামীকাল: বিএনপির কর্মসূচি ঘোষণা",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "6281485cb85cb3eba349f5f9ca6805aa",
-      "outlet": "business-standard",
-      "stratum": "edge_pm",
-      "title": "Dhaka seeks Delhi's clarification on Hasina's planned 5 Aug virtual appearance",
-      "surfaceForm": "Prime Minister",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "a25dbf3725c43af2f4e8c2a2bea90c04",
-      "outlet": "ittefaq",
-      "stratum": "edge_pm",
-      "title": "ইমরান খানের মুক্তির দাবিতে ইসলামাবাদ অভিমুখে হাজারো সমর্থকের লং মার্চ",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "bac49c5b3e9916898ae64f36ebd558ba",
-      "outlet": "prothom-alo",
-      "stratum": "edge_pm",
-      "title": "শেখ হাসিনার বিষয়ে মন্ত্রীদের বক্তব্যে মিল পাচ্ছেন না রুমিন ফারহানা",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "a46bbcac9aa2ca0d5ea02ff393667766",
-      "outlet": "bangladesh-protidin",
-      "stratum": "stratified",
-      "title": "প্রথম দিনে ১০ কর্মসূচিতে প্রধানমন্ত্রীর অংশগ্রহণ",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "a46bbcac9aa2ca0d5ea02ff393667766",
-      "outlet": "bangladesh-protidin",
-      "stratum": "stratified",
-      "title": "প্রথম দিনে ১০ কর্মসূচিতে প্রধানমন্ত্রীর অংশগ্রহণ",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "a46bbcac9aa2ca0d5ea02ff393667766",
-      "outlet": "bangladesh-protidin",
-      "stratum": "stratified",
-      "title": "প্রথম দিনে ১০ কর্মসূচিতে প্রধানমন্ত্রীর অংশগ্রহণ",
-      "surfaceForm": "প্রধানমন্ত্রীকে",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "d6843e2d3ba059cbbf4dccfe4b50f45a",
-      "outlet": "bdnews24",
-      "stratum": "stratified",
-      "title": "হাসিনা নিজেই আসতে চান, তাহলে প্রত্যর্পণে ভারতের সমস্যা কোথায়: তথ্য উপদেষ্টা",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "264c39a8e6c86b4dc5528960032c2b9c",
-      "outlet": "prothom-alo",
-      "stratum": "stratified",
-      "title": "বাংলাদেশ–ভারত সম্পর্ক নতুন করে শুরুর বিষয়ে ঐকমত্য",
-      "surfaceForm": "প্রধানমন্ত্রীর",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    },
-    {
-      "articleId": "264c39a8e6c86b4dc5528960032c2b9c",
-      "outlet": "prothom-alo",
-      "stratum": "stratified",
-      "title": "বাংলাদেশ–ভারত সম্পর্ক নতুন করে শুরুর বিষয়ে ঐকমত্য",
-      "surfaceForm": "প্রধানমন্ত্রী",
-      "entityId": "ent_tareque_rahman",
-      "canonicalEn": "Tarique Rahman"
-    }
-  ]
+  "flaggedPmFpCount": 0,
+  "flaggedPmFps": []
 }
